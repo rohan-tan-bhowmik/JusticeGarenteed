@@ -1,0 +1,13 @@
+# --- core libs ------------------------------------------------
+numpy<2                   # 1.26.4 is the last 1.x
+matplotlib
+pytesseract
+opencv-python-headless    # headless avoids the GUI DLL swap issue
+easyocr==1.7.2
+scikit-image<0.25         # 0.24.x wheels were built against NumPy 1.x
+
+# --- PyTorch CUDA 11.8 ---------------------------------------
+torch==2.2.1+cu118
+torchvision==0.17.1+cu118
+torchaudio==2.2.1+cu118
+--extra-index-url https://download.pytorch.org/whl/cu118
