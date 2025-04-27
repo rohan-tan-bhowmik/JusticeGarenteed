@@ -1,0 +1,3 @@
+[submodule "external/lol_last_hit_bot"]
+	path = external/lol_last_hit_bot
+	url = git@github.com:Cengineer00/LOL-LAST-HIT-BOT.git

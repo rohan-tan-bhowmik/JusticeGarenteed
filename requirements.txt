@@ -5,6 +5,10 @@ pytesseract
 opencv-python-headless    # headless avoids the GUI DLL swap issue
 easyocr==1.7.2
 scikit-image<0.25         # 0.24.x wheels were built against NumPy 1.x
+pillow 
+requests
+beautifulsoup4
+tqdm
 
 # --- PyTorch CUDA 11.8 ---------------------------------------
 torch==2.2.1+cu118

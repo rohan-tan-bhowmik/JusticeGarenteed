@@ -43,16 +43,16 @@ r3-cs ; [943:976, 1013:1055] ; text
 r4-cs ; [990:1023, 1013:1055] ; text
 r5-cs ; [1034:1067, 1013:1055] ; text
 
-b1-items ; [857:890, 610:794] ; images
-b2-items ; [900:933, 610:794] ; images
-b3-items ; [943:976, 610:794] ; images
-b4-items ; [990:1023, 610:794] ; images
-b5-items ; [1034:1067, 610:794] ; images
-r1-items ; [857:890, 1138:1318] ; images
-r2-items ; [900:933, 1138:1318] ; images
-r3-items ; [943:976, 1138:1318] ; images
-r4-items ; [990:1023, 1138:1318] ; images
-r5-items ; [1034:1067, 1138:1318] ; images
+b1-items ; [863:890, 610:794] ; images
+b2-items ; [907:934, 610:794] ; images
+b3-items ; [951:978, 610:794] ; images
+b4-items ; [995:1022, 610:794] ; images
+b5-items ; [1039:1066, 610:794] ; images
+r1-items ; [863:890, 1138:1318] ; images
+r2-items ; [907:934, 1138:1318] ; images
+r3-items ; [951:978, 1138:1318] ; images
+r4-items ; [995:1022, 1138:1318] ; images
+r5-items ; [1039:1066, 1138:1318] ; images
 
 b1-health ; [205:211, 30:71] ; bar
 b2-health ; [308:314, 30:71] ; bar
