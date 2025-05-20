@@ -5,6 +5,8 @@ from tqdm import tqdm
 from roboflow import Roboflow
 import argparse
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 def poisson_sample_indices(video_len, num_samples, offset= 0, lamb =None):
     if lamb is None:
         lamb = video_len / num_samples  # average distance between frames
@@ -85,14 +87,37 @@ def save_frames(frames, champion_name, output_dir):
         frame_path = os.path.join(output_dir, f"{champion_name}_{i:05d}.png")
         cv2.imwrite(frame_path, frame) 
 
-def upload_to_roboflow(data_dir, api_key, project_name, split = "train"):
+def upload_to_roboflow(data_dir, api_key, project_name, split = "train", max_workers = 8):
     rf = Roboflow(api_key=api_key)
     project = rf.project(project_name)
 
-    for filename in tqdm(os.listdir(data_dir)):
-        if filename.endswith((".png", ".jpg", ".jpeg")):
-            filepath = os.path.join(data_dir, filename)
-            project.upload(filepath, split = split)
+    tasks = []    
+    for fname in os.listdir(data_dir):
+        if fname.lower().endswith((".png", ".jpg", ".jpeg")):
+            fpath = os.path.join(data_dir, fname)
+            tasks.append((fpath, split))
+
+    def upload_one(fpath, split):
+        try:
+            project.upload(fpath, split=split)
+            return (fpath, "ok")
+        except Exception as e:
+            return (fpath, str(e))
+
+    # Run uploads in parallel
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(upload_one, fpath, split) for fpath, split in tasks]
+        for future in tqdm(as_completed(futures), total=len(futures), desc="Uploading"):
+            results.append(future.result())
+
+    failed = [r for r in results if r[1] != "ok"]
+    if failed:
+        print(f"\n Failed uploads ({len(failed)}):")
+        for fpath, error in failed:
+            print(f"{fpath} — {error}")
+    else:
+        print("\n All images uploaded successfully.")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Utility for extracting frames and uploading to Roboflow.")
@@ -110,8 +135,8 @@ if __name__ == "__main__":
     upload_parser.add_argument("--data_dir", type=str, required=True, help="Directory containing frames to upload.")
     upload_parser.add_argument("--api_key", type=str, required=True, help="Roboflow API key.")
     upload_parser.add_argument("--project_name", type=str, required=True, help="Roboflow project name.")
-    upload_parser.add_argument("--split", type=str, default="train", choices=["train", "val"], help="Dataset split (train or val).")
-
+    upload_parser.add_argument("--split", type=str, default="train", choices=["train", "valid"], help="Dataset split (train or val).")
+    upload_parser.add_argument("--max_workers", type=int, default=8, help="Number of concurrent uploads.")
     args = parser.parse_args()
 
     if args.command == "extract":
@@ -126,7 +151,7 @@ if __name__ == "__main__":
         save_frames(val_frames, args.champion_name + "_val", os.path.join(args.output_dir, "val"))
 
     elif args.command == "upload":
-        upload_to_roboflow(args.data_dir, args.api_key, args.project_name, args.split)
+        upload_to_roboflow(args.data_dir, args.api_key, args.project_name, args.split, args.max_workers)
 
     else:
         parser.print_help()
