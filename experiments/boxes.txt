@@ -1,5 +1,63 @@
 category ; [y-range, x-range] ; type
 
+
+
+b1-items ; [864:888, 639:796] ; images
+b2-items ; [908:932, 640:794] ; images
+b3-items ; [952:976, 640:794] ; images
+b4-items ; [996:1020, 640:794] ; images
+b5-items ; [1040:1064, 640:794] ; images
+
+
+r1-items ; [864:888, 1140:1294] ; images
+r2-items ; [908:932, 1140:1294] ; images
+r3-items ; [952:976, 1140:1294] ; images
+r4-items ; [996:1020, 1140:1294] ; images
+r5-items ; [1040:1064, 1140:1294] ; images
+
+b1-health ; [205:211, 30:71] ; bar
+b2-health ; [308:314, 30:71] ; bar
+b3-health ; [411:417, 30:71] ; bar
+b4-health ; [514:520, 30:71] ; bar
+b5-health ; [617:623, 30:71] ; bar
+r1-health ; [205:211, 1847:1888] ; bar
+r2-health ; [308:314, 1847:1888] ; bar
+r3-health ; [411:417, 1847:1888] ; bar
+r4-health ; [514:520, 1847:1888] ; bar
+r5-health ; [617:623, 1847:1888] ; bar
+
+b1-mana ; [214:220, 30:71] ; bar
+b2-mana ; [317:323, 30:71] ; bar
+b3-mana ; [420:426, 30:71] ; bar
+b4-mana ; [523:529, 30:71] ; bar
+b5-mana ; [626:632, 30:71] ; bar
+r1-mana ; [214:220, 1847:1888] ; bar
+r2-mana ; [317:323, 1847:1888] ; bar
+r3-mana ; [420:426, 1847:1888] ; bar
+r4-mana ; [523:529, 1847:1888] ; bar
+r5-mana ; [626:632, 1847:1888] ; bar
+
+
+
+b-kills ; [13:54, 898:947] ; text
+b-gold ; [14:38, 796:857] ; text
+b-towers; [14:39, 733:764] ; text
+b-grubs; [14:39, 658:682] ; text
+b-heralds-barons; [14:39, 588:612] ; text
+b-dragons; [14:39, 514:538] ; text
+
+r-kills ; [13:54, 985:1035] ; text
+r-gold ; [14:38, 1103:1160] ; text
+r-towers; [14:39, 1174:1200] ; text
+r-grubs; [14:39, 1243:1269] ; text
+r-heralds-barons; [14:39, 1324:1350] ; text
+r-dragons; [14:39, 1402:1428] ; text
+
+
+
+
+
+
 game-time ; [75:95, 924:1005] ; text
 xp-bar ; [894:901, 75:175] ; bar
 level ; [889:911, 47:72] ; text
@@ -42,62 +100,4 @@ r2-cs ; [900:933, 1013:1055] ; text
 r3-cs ; [943:976, 1013:1055] ; text
 r4-cs ; [990:1023, 1013:1055] ; text
 r5-cs ; [1034:1067, 1013:1055] ; text
-
-b1-items ; [864:888, 641:795] ; images
-b2-items ; [908:932, 640:794] ; images
-b3-items ; [951:978, 640:794] ; images
-b4-items ; [995:1022, 640:794] ; images
-b5-items ; [1039:1066, 640:794] ; images
-r1-items ; [863:890, 1138:1318] ; images
-r2-items ; [907:934, 1138:1318] ; images
-r3-items ; [951:978, 1138:1318] ; images
-r4-items ; [995:1022, 1138:1318] ; images
-r5-items ; [1039:1066, 1138:1318] ; images
-
-b1-health ; [205:211, 30:71] ; bar
-b2-health ; [308:314, 30:71] ; bar
-b3-health ; [411:417, 30:71] ; bar
-b4-health ; [514:520, 30:71] ; bar
-b5-health ; [617:623, 30:71] ; bar
-r1-health ; [205:211, 1847:1888] ; bar
-r2-health ; [308:314, 1847:1888] ; bar
-r3-health ; [411:417, 1847:1888] ; bar
-r4-health ; [514:520, 1847:1888] ; bar
-r5-health ; [617:623, 1847:1888] ; bar
-
-b1-mana ; [214:220, 30:71] ; bar
-b2-mana ; [317:323, 30:71] ; bar
-b3-mana ; [420:426, 30:71] ; bar
-b4-mana ; [523:529, 30:71] ; bar
-b5-mana ; [626:632, 30:71] ; bar
-r1-mana ; [214:220, 1847:1888] ; bar
-r2-mana ; [317:323, 1847:1888] ; bar
-r3-mana ; [420:426, 1847:1888] ; bar
-r4-mana ; [523:529, 1847:1888] ; bar
-r5-mana ; [626:632, 1847:1888] ; bar
-
-b1-level ; [182:198, 29:50] ; text
-b2-level ; [285:301, 29:50] ; text
-b3-level ; [388:404, 29:50] ; text
-b4-level ; [491:504, 29:50] ; text
-b5-level ; [594:610, 29:50] ; text
-r1-level ; [182:198, 1866:1887] ; text
-r2-level ; [285:301, 1866:1887] ; text
-r3-level ; [388:404, 1866:1887] ; text
-r4-level ; [491:504, 1866:1887] ; text
-r5-level ; [594:610, 1866:1887] ; text
-
-b-kills ; [13:54, 898:947] ; text
-b-gold ; [14:38, 796:857] ; text
-b-towers; [14:39, 733:764] ; text
-b-grubs; [14:39, 658:682] ; text
-b-heralds-barons; [14:39, 588:612] ; text
-b-dragons; [14:39, 514:538] ; text
-
-r-kills ; [13:54, 985:1035] ; text
-r-gold ; [14:38, 1103:1160] ; text
-r-towers; [14:39, 1174:1200] ; text
-r-grubs; [14:39, 1243:1269] ; text
-r-heralds-barons; [14:39, 1324:1350] ; text
-r-dragons; [14:39, 1402:1428] ; text
 

@@ -15,12 +15,16 @@ Example
 python scrape_stats.py frame.png
 python scrape_stats.py replay.mp4 12345
 """
+
 from __future__ import annotations
+import torch
 
 import sys, re, pathlib, cv2, pytesseract, numpy as np
 from typing import Dict, Tuple
 from pathlib import Path
 import matplotlib.pyplot as plt
+
+import minimap
 
 # ── Configuration ──────────────────────────────────────────────────────────
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
@@ -31,18 +35,24 @@ ROIType       = Tuple[slice, slice, str]     # rows, cols, kind
 
 # ── Item utilities ────────────────────────────────────────────────────────
 
-def split_item_box(box_img: np.ndarray) -> list[np.ndarray]:
+def split_item_box(box_img: np.ndarray, team, num) -> list[np.ndarray]:
     """Return the 7 cropped, border‑stripped slots from an item bar ROI."""
-    plt.imshow(box_img)
-    plt.show()
-    slot_w, gap_w = 24, 2
+    # plt.imshow(box_img)
+    # plt.show()
+    slot_w = 24
+    gaps_r = [[2,2,1,2,2,2], [2,2,1,2,2,2], [2,2,1,2,2,2], [2,1,1,2,2,2], [2,1,2,2,2,2]]
+    gaps_b = [[2,2,2,3,3,2], [2,2,2,2,4,2], [2,2,2,2,4,2], [2,2,2,2,3,2], [2,2,2,2,4,2]]
+    print(team, num)
+    # if team == 1 and num == 4:
+    #     gap_w[1] = 1
+    gap_w = (gaps_r if team else gaps_b)[num - 1]
     slots = []
     x = 0
-    for _ in range(6):
+    for i in range(6):
         slot = box_img[:, x:x + slot_w]
         # slot = slot[2:-2, 2:-2]           # trim 2‑pixel HUD border
         slots.append(slot)
-        x += slot_w + gap_w
+        x += slot_w + gap_w[i]
     return slots
 
 def load_item_icons(size: Tuple[int, int]) -> Dict[str, np.ndarray]:
@@ -62,8 +72,8 @@ def load_item_icons(size: Tuple[int, int]) -> Dict[str, np.ndarray]:
 def match_item(slot: np.ndarray, refs: Dict[str, np.ndarray]) -> Tuple[str | None, float]:
     """Return (best_name, confidence%) using multi‑scale & shift template matching."""
     best_name, best_score = None, -1.0
-    plt.imshow(slot)
-    plt.show()
+    # plt.imshow(slot)
+    # plt.show()
     scales = [ 1.0]
     shifts = [-2, 0, 2]
     for name, ref in refs.items():
@@ -80,10 +90,10 @@ def match_item(slot: np.ndarray, refs: Dict[str, np.ndarray]) -> Tuple[str | Non
                         best_name, best_score = name, score
     return (best_name if best_score*100 >= CONF_THRESHOLD else None, best_score*100)
 
-def analyze_item_bar(bar: np.ndarray, refs: Dict[str, np.ndarray]):
+def analyze_item_bar(bar: np.ndarray, refs: Dict[str, np.ndarray], team, num):
     """Return list of (idx, name|None, conf%) for 7 slots."""
     results = []
-    for idx, slot in enumerate(split_item_box(bar)):
+    for idx, slot in enumerate(split_item_box(bar, team, num)):
         if np.mean(slot) < 30:                 # mostly black → empty
             results.append((idx, None, 0.0))
             continue
@@ -151,7 +161,7 @@ def handle_frame(rgb: np.ndarray, boxes: Dict[str, ROIType]):
             if icon_cache is None:
                 h,w,_ = roi.shape
                 icon_cache = load_item_icons((w//7, h))
-            for idx,name,conf in analyze_item_bar(roi, icon_cache):
+            for idx,name,conf in analyze_item_bar(roi, icon_cache, int(cat[0] == 'r'), int(cat[1])):
                 tag = name if name else "EMPTY"
                 print(f"{cat}[{idx}] images → {tag} ({conf:.1f}%)")
         else:
@@ -165,3 +175,14 @@ if __name__ == "__main__":
     frame = read_frame(sys.argv[1], int(sys.argv[2]) if len(sys.argv)==3 else 0)
     plt.imshow(frame); plt.title("input frame"); plt.axis("off"); plt.show()
     handle_frame(frame, parse_boxes())
+
+    num_classes = 171
+    model_path = "fastrcnn_model.pt"  # Update with your actual model path
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = minimap.create_model(num_classes, device=device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+
+    # print("\nMinimap detections:")
+    # minimap.analyze_image(frame, model, num_classes)
