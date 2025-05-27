@@ -14,6 +14,7 @@ import argparse
 
 from tqdm import tqdm
 
+from itertools import product
 
 # Cannon and siege minions have a lower chance of appearing
 CANNON_CHANCE = 0.15
@@ -95,233 +96,6 @@ def plot_image_with_boxes(img, boxes, labels):
     plt.axis('off')
     plt.show()
 
-  
-def alpha_from_green_distance(img, strength = 0.9):
-    """
-    Estimate alpha based on how different the pixel is from green.
-    
-    :param strength: How much to amplify the difference from green.
-        Higher strengths amplify difference between green and other colors.
-        Lower the strength to make the alpha mask more forgiving (more of the original background remains/shows through the subject)
-    :return: Alpha mask where green is 0 and other colors are 1.
-    """
-
-    img = img.astype(np.float32) / 255.0
-    green = np.array([0, 1, 0], dtype=np.float32)
-    diff = np.linalg.norm(img - green, axis=2)
-    alpha_mask = np.clip(diff * strength, 0, 1)
-    return alpha_mask
-
-def despill(img, alpha, strength=0.75):
-    """
-    Reduce green from semi-transparent regions.
-    
-    :param float strength: How much to reduce green in the image.
-        Higher values reduce more green, but may affect other colors.
-        Lower values preserve more of the original image.
-    """
-    img = img.astype(np.float32) / 255.0
-    alpha_exp = np.expand_dims(alpha, axis=-1)
-    
-    # Desaturate green where alpha is low
-    green_reduction = (1 - alpha_exp[..., 0]) * strength
-    img[..., 1] -= green_reduction
-    img = np.clip(img, 0, 1)
-    return img
-
-def flatten_alpha_and_erase_green(rgba, erase_threshold=0.25):
-    rgb = rgba[..., :3].astype(np.float32) / 255.0
-    alpha = rgba[..., 3:] / 255.0
-
-    # Zero out pixels where alpha is too low (erases green haze)
-    mask = alpha > erase_threshold
-    rgb = rgb * mask  # remove RGB where alpha is approx 0
-
-    result = (rgb * 255).astype(np.uint8)
-    return result
-
-def chroma_key_preserve_glow(img_bgr, mask_col = [0,0,0]):
-    img = img_bgr.copy()
-    alpha = alpha_from_green_distance(img)
-    alpha = cv2.GaussianBlur(alpha, (5, 5), 0)  # Feather for smoother transitions
-    img_despilled = despill(img, alpha)
-
-    rgba = np.dstack([img_despilled, alpha])
-    rgba = (rgba * 255).astype(np.uint8)
-    flattened = flatten_alpha_and_erase_green(rgba)
-    # Mask out mask_col areas
-    mask = np.all(flattened[..., :3] <= mask_col, axis=-1)
-    flattened[mask] = [255, 255, 255]  # Set mask_col areas to white
-    return flattened 
-
-
-def clean_background_artifacts(img_bgr, green_bgr=(0, 255, 0), threshold=45):
-    img = img_bgr.astype(np.float32)
-    green = np.array(green_bgr, dtype=np.float32)
-
-    # Compute distance from green color
-    diff = np.linalg.norm(img - green, axis=2)
-
-    # Create mask: preserve areas that differ enough from green
-    mask_keep = (diff > threshold).astype(np.uint8)
-
-    # Morphological open to clean up specks
-    kernel = np.ones((3, 3), np.uint8)
-    mask_keep = cv2.morphologyEx(mask_keep, cv2.MORPH_OPEN, kernel)
-
-    # Replace non-kept regions with solid green
-    cleaned = img.copy()
-    cleaned[mask_keep == 0] = green
-
-    return cleaned.astype(np.uint8)
-
-def suppress_green_hue(rgb_img, hue_range=(40, 110), sat_thresh=60, val_thresh=50, shift_hue_by=0, desat_factor=0.95):
-    """
-    Suppress lime green hues remaining in the RGB image by shifting hue away from green.
-    - hue_range: HSV hue range to treat as green (in degrees: 0–180 for OpenCV)
-    - sat_thresh: minimum saturation to consider (to skip gray/white)
-    - val_thresh: minimum value to consider (to skip very dark areas)
-    - shift_hue_by: how much to shift hue away from green (e.g. +20)
-    """
-    img_hsv = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2HSV)
-
-    H, S, V = img_hsv[..., 0], img_hsv[..., 1], img_hsv[..., 2]
-    green_mask = (
-        (H >= hue_range[0]) & (H <= hue_range[1]) &
-        (S >= sat_thresh) & (V >= val_thresh)
-    )
-
-    # Shift hue for green pixels away from green (wrap around if needed)
-    img_hsv[..., 0][green_mask] = (img_hsv[..., 0][green_mask] + shift_hue_by) % 180
-
-    # Optionally, desaturate a bit
-    img_hsv[..., 1][green_mask] = (img_hsv[..., 1][green_mask] * desat_factor).astype(np.uint8)
-
-    result = cv2.cvtColor(img_hsv, cv2.COLOR_HSV2RGB)
-    return result
-
-def suppress_only_lime(rgb_img, hue_range=(60, 75), sat_thresh=80, val_thresh=60, desat_strength=0.3):
-    """
-    Suppress only pure lime green hues by desaturating them softly.
-    No hue shift; preserves warm yellows and oranges.
-    """
-    img_hsv = cv2.cvtColor(rgb_img, cv2.COLOR_RGB2HSV).astype(np.float32)
-
-    H, S, V = img_hsv[..., 0], img_hsv[..., 1], img_hsv[..., 2]
-    green_mask = (
-        (H >= hue_range[0]) & (H <= hue_range[1]) &
-        (S >= sat_thresh) & (V >= val_thresh)
-    )
-
-    # Desaturate only pure lime pixels slightly
-    img_hsv[..., 1][green_mask] *= (1 - desat_strength)
-    img_hsv = np.clip(img_hsv, 0, 255).astype(np.uint8)
-
-    return cv2.cvtColor(img_hsv, cv2.COLOR_HSV2RGB)
-
-def context_aware_despill(rgb_img, alpha, green_thresh=0.28, blur_kernel=13, suppress_strength=0.5):
-    """
-    More aggressively remove green while preserving glow. No hue shifting.
-    - Suppresses green using color distance AND alpha mask
-    """
-    rgb = rgb_img.astype(np.float32) / 255.0
-
-    # Define green color in normalized RGB
-    target_green = np.array([0.0, 1.0, 0.0])
-
-    # Euclidean distance from pure green
-    dist_from_green = np.linalg.norm(rgb - target_green, axis=2)
-    green_mask = (dist_from_green < green_thresh) & (alpha > 0.15)
-
-    # Generate blurred fallback image (local context)
-    blurred_rgb = cv2.blur(rgb, (blur_kernel, blur_kernel))
-
-    # Adaptive desaturation toward local blurred average
-    rgb_out = rgb.copy()
-    for c in range(3):
-        rgb_out[..., c][green_mask] = (
-            (1 - suppress_strength) * rgb[..., c][green_mask] +
-            suppress_strength * blurred_rgb[..., c][green_mask]
-        )
-
-    rgb_out = np.clip(rgb_out, 0, 1)
-    return (rgb_out * 255).astype(np.uint8)
-
-def chroma_key_with_glow_preservation(
-    img_bgr: np.ndarray,
-    hsv_lower: int = 40,
-    hsv_upper: int = 80,
-    target_hue: int = 90,  # unused
-    aggressive: bool = False,
-    champ_boxes=None,
-    pet_boxes=None,
-    ability_boxes=None  # unused for now
-) -> np.ndarray:
-    if champ_boxes is None: champ_boxes = []
-    if pet_boxes is None: pet_boxes = []
-
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
-    h, s, v = cv2.split(hsv)
-    shape = h.shape
-
-    region = np.zeros(shape, dtype=np.uint8)  # 0: normal, 1: champ, 2: pet
-
-    for x_min, y_min, x_max, y_max in champ_boxes:
-        region[y_min:y_max, x_min:x_max] = 1
-    for x_min, y_min, x_max, y_max in pet_boxes:
-        region[y_min:y_max, x_min:x_max] = 2
-
-    normal = region == 0
-    champ = region == 1
-    pet = region == 2
-
-    # Strong lime removal
-    strong_mask = np.zeros(shape, dtype=bool)
-    if aggressive:
-        strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 100) & (v >= 100) & normal
-    else:
-        strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 150) & (v >= 150) & normal
-    strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 150) & (v >= 150) & champ
-    strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 170) & (v >= 170) & pet
-
-    out = img_bgr.copy()
-    out[strong_mask] = (255, 255, 255)
-
-    # Hue proximity to lime
-    proximity = 1.0 - (np.abs(h - (hsv_lower + hsv_upper) / 2) / ((hsv_upper - hsv_lower) / 2))
-    proximity = np.clip(proximity, 0, 1)
-
-    lime_band = (h >= hsv_lower) & (h <= hsv_upper)
-    darken_mask = lime_band & ~strong_mask
-
-    # Base darkening
-    strength = proximity * 0.8
-
-    # Pets: always mild
-    strength[pet] *= 0.3
-
-    # Champions: dynamic darkening (how green they are on avg)
-    for x_min, y_min, x_max, y_max in champ_boxes:
-        box_mask = np.zeros_like(region, dtype=bool)
-        box_mask[y_min:y_max, x_min:x_max] = True
-
-        # Compute average proximity inside box
-        avg_prox = np.mean(proximity[box_mask])
-
-        # More lime (avg_prox near 1) ➝ reduce darkening
-        box_strength = (1.0 - avg_prox)  # if fully lime, near 0
-        strength[box_mask] *= box_strength  # scale whole box by this
-
-    # Apply darkening
-    v[darken_mask] *= (1 - strength[darken_mask])
-
-    hsv[..., 2] = v
-    hsv = np.clip(hsv, 0, 255).astype(np.uint8)
-    darkened = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-    out[darken_mask] = darkened[darken_mask]
-
-    return out
-
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
     """
     Generate frames from a video file and save them as images.
@@ -353,9 +127,6 @@ def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5
 
     cap.release()
     cv2.destroyAllWindows()
-
-generate_map_frames('/Users/HP/Documents/GitHub/JusticeGarenteed/frames/fullmap.mp4', '../frames/map', 7.8, 8.4, n = 5)
-
   
 def chroma_key_with_glow_preservation(
     img_bgr: np.ndarray,
@@ -431,27 +202,6 @@ def chroma_key_with_glow_preservation(
     out[darken_mask] = darkened[darken_mask]
 
     return out
-
-  
-def simple_chroma_key(
-    img_bgr: np.ndarray,
-    threshold: float = 0.5,
-    bg_color: tuple = (255, 255, 255)
-) -> np.ndarray:
-    """
-    Very simple chroma key:
-      - Compute per-pixel distance to pure green ([0,1,0]).
-      - Pixels closer than `threshold` are background.
-      - Paint them with `bg_color`.
-    """
-    img = img_bgr.astype(np.float32) / 255.0
-    dist = np.linalg.norm(img - np.array([0, 1, 0], np.float32), axis=2)
-    fg_mask = dist > threshold
-    out = img_bgr.copy()
-    out[~fg_mask] = bg_color
-    return out
-
-
   
 def IoU(box1, box2):
     """
@@ -742,6 +492,16 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path):
 def is_far_enough(new_pos, existing_pos, min_dist = 100):
     return all(np.linalg.norm(np.array(new_pos) - np.array(p)) > min_dist for p in existing_pos)
 
+def generate_grid_offsets(spacing=60, rows=3, cols=3):
+    """
+    Generate a grid of (dx, dy) offsets centered around (0,0).
+    """
+    x_offsets = [spacing * (i - cols // 2) for i in range(cols)]
+    y_offsets = [spacing * (j - rows // 2) for j in range(rows)]
+    offsets = list(product(x_offsets, y_offsets))
+    random.shuffle(offsets)  # Add randomness
+    return offsets
+
 def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = False, max_clusters = 5):
     """
     Place multiple cutouts on the map image. 
@@ -805,7 +565,13 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = Fal
                 try:
                     map_img, box_dict = place_cutout(map_img, cutout, box_dict, x, y)
                     positions.append((x, y))  # save successful placement
+                    for key in box_dict:
+                        if len(box_dict[key]):
+                            if key not in box_dict_all:
+                                box_dict_all[key] = []
+                            box_dict_all[key].extend(box_dict[key])
                     break
+
                 except ValueError:
                     attempts += 1
                     continue
@@ -813,11 +579,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = Fal
                 print(f"Failed to place champion cutout after 200 attempts, skipping this cutout.")
                 continue
 
-            for key in box_dict:
-                if len(box_dict[key]):
-                    if key not in box_dict_all:
-                        box_dict_all[key] = []
-                    box_dict_all[key].extend(box_dict[key])
+            
     
     return map_img, box_dict_all
 
@@ -1252,13 +1014,13 @@ def generate_synthetic_ds(img_dir: str,
 
     # Load image paths
     img_dir = os.path.join(img_dir, split)
-    imgs = os.listdir(img_dir)
-    all_imgs = [img for img in imgs if img.endswith('.jpg')]
+    all_files = os.listdir(img_dir)
+    all_imgs = [img for img in all_files if img.endswith('.jpg')]
     map_imgs = [os.path.join(img_dir, img) for img in all_imgs if img.startswith('map_frame_')]
     # Separate by role
     champ_imgs = []
     champ_names = set()
-    for img in imgs:
+    for img in all_imgs:
         if not img.startswith(('red-','blue-', 'map_frame_')):
             if '-' in img:
                 champ_name = img[:img.find('-')]
@@ -1269,7 +1031,6 @@ def generate_synthetic_ds(img_dir: str,
             if champ_name not in champs_to_exclude:                
                 champ_imgs.append(os.path.join(img_dir, img))
                 champ_names.add(champ_name)
-    champ_names.remove('')
 
     minion_imgs = [os.path.join(img_dir, img)
                 for img in all_imgs if img.startswith(('red-','blue-'))]
@@ -1292,8 +1053,13 @@ def generate_synthetic_ds(img_dir: str,
         num_minions = int(np.clip(random.gauss(5, 7), 0, 20))
 
         champs_chosen = 0
+        attempts = 0
         test_imgs = []
         champion_names = set()
+
+        # Ensure we don't choose more champions than available
+        num_champions = min(num_champions, len(champ_names))
+
         while champs_chosen < num_champions:
             test_img = random.choice(champ_imgs)
             base_img_name = os.path.basename(test_img).split('/')[-1]
@@ -1302,6 +1068,7 @@ def generate_synthetic_ds(img_dir: str,
                 test_imgs.append(test_img)
                 champion_names.add(champ_name)
                 champs_chosen += 1
+            attempts += 1
 
         minion_imgs = []
         for _ in range(num_minions):
@@ -1404,7 +1171,7 @@ def generate_synthetic_ds(img_dir: str,
         )
         map_img = add_healthbars(
             map_img,
-            minion_box_dicts,
+            [box_dict_minion],
             mode="minions",
             font = font,
             image_paths=minion_imgs
