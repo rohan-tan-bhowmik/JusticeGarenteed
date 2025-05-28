@@ -1194,7 +1194,7 @@ def main():
     parser.add_argument("--dataset_dir", type=str, default="../greenscreends/")
     parser.add_argument("--split", type=str, choices=["train", "val"], default="train",
                         help="Split to generate (train or val).")
-    parser.add_argument("--fx_folder", type=str, default=FX_FOLDER,
+    parser.add_argument("--fx_folder", type=str, default="../fx",
                         help="Folder containing FX images.")
     parser.add_argument("--font_path", type=str, default="../BeaufortForLoL-OTF/BeaufortforLOL-Bold.otf",
                         help="Path to the font file for health bars.")
