@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 import os
 import random
 import argparse
+import math
 
 from tqdm import tqdm
 
@@ -578,11 +579,8 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = Fal
             else:
                 print(f"Failed to place champion cutout after 200 attempts, skipping this cutout.")
                 continue
-
-            
     
     return map_img, box_dict_all
-
   
 def get_boxes_from_box_dict(box_dict):
     """
@@ -606,12 +604,12 @@ def get_boxes_from_box_dict(box_dict):
             labels.append(champtoi[key])
     return boxes, labels
 
-def add_healthbars(map_img, box_dicts, mode, font, image_paths=None):
+def add_healthbars(map_img, box_dict, mode, font, image_paths=None):
     """
     Add health bars above each object (champion, minion) on the map image.
 
     :param map_img: The map image (HWC, RGB).
-    :param box_dicts: List of box_dicts (one per cutout).
+    :param box_dict: Dictionary containing bounding boxes for champion, pet, and ability.
     :param mode: "champs" or "minions".
     :param image_paths: Required for mode="minions"; used to match team color.
     :return: Updated map image.
@@ -620,16 +618,15 @@ def add_healthbars(map_img, box_dicts, mode, font, image_paths=None):
         healthbar_dir = "../cropped_healthbars"
         healthbar_paths = [os.path.join(healthbar_dir, f) for f in os.listdir(healthbar_dir)
                            if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        for box_dict in box_dicts:
-            for key, boxes in box_dict.items():
-                if key in ['Mask', 'Ability']:
-                    continue
-                if key == 'Pet':
-                    for pet_box in boxes:
-                        map_img = _draw_healthbar(map_img, pet_box, healthbar_paths, font=font)
-                else:
-                    for box in boxes:
-                        map_img = _draw_healthbar(map_img, box, healthbar_paths, font = font)
+        for key, boxes in box_dict.items():
+            if key in ['Mask', 'Ability']:
+                continue
+            if key == 'Pet':
+                for pet_box in boxes:
+                    map_img = _draw_healthbar(map_img, pet_box, healthbar_paths, font=font)
+            else:
+                for box in boxes:
+                    map_img = _draw_healthbar(map_img, box, healthbar_paths, font = font)
 
     elif mode == "minions":
         assert image_paths is not None, "image_paths is required for minion mode."
@@ -641,22 +638,20 @@ def add_healthbars(map_img, box_dicts, mode, font, image_paths=None):
         blue_paths = [os.path.join(blue_healthbar_dir, f) for f in os.listdir(blue_healthbar_dir)
                       if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
 
-        for box_dict, path in zip(box_dicts, image_paths):
-            if "blue-" in os.path.basename(path).lower():
-                hb_paths = blue_paths
-            else:
+        for minion, boxes in box_dict.items():
+            if 'red' in minion.lower(): 
                 hb_paths = red_paths
-
-            for key, boxes in box_dict.items():
-                if key in ['Mask', 'Ability']:
-                    continue
-                if key == 'Pet':
-                    for pet_group in boxes:
-                        for pet_box in pet_group:
-                            map_img = _draw_healthbar(map_img, pet_box, hb_paths)
-                else:
-                    for box in boxes:
-                        map_img = _draw_healthbar(map_img, box, hb_paths)
+            else:
+                hb_paths = blue_paths
+            if minion in ['Mask', 'Ability']:
+                continue
+            if minion == 'Pet':
+                for pet_group in boxes:
+                    for pet_box in pet_group:
+                        map_img = _draw_healthbar(map_img, pet_box, hb_paths, font = None)
+            else:
+                for box in boxes:
+                    map_img = _draw_healthbar(map_img, box, hb_paths, font = None)
 
     return map_img
 
@@ -822,7 +817,6 @@ def distort_fx(fx: Image.Image, max_size = 100) -> Image.Image:
 from PIL import Image, ImageOps, ImageEnhance
 from collections import Counter
 
-FX_FOLDER = "../fx"
 def weave_and_compose(base_map: Image.Image,
                       cutout_layers: list[tuple[Image.Image,tuple[int,int]]],
                       fx_instances: list[Image.Image],
@@ -1145,7 +1139,7 @@ def generate_synthetic_ds(img_dir: str,
             cutout_layers.append((pil_cut, (x0, y0)))
 
         # 3) load & distort FX
-        fx_instances = load_fx_images(FX_FOLDER)
+        fx_instances = load_fx_images(fx_folder)
 
         # 4) weave under & over
         pil_composed = weave_and_compose(
@@ -1165,13 +1159,14 @@ def generate_synthetic_ds(img_dir: str,
         font = load_font(font_path, size = 10)
         map_img = add_healthbars(
             map_img,
-            [box_dict_champ],
+            box_dict_champ,
             font = font,
             mode="champs"
         )
+
         map_img = add_healthbars(
             map_img,
-            [box_dict_minion],
+            box_dict_minion,
             mode="minions",
             font = font,
             image_paths=minion_imgs
