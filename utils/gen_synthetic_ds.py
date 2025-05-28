@@ -84,9 +84,9 @@ def parse_coco_json(img_name, json_path):
 
     return boxes, labels
 
-def plot_image_with_boxes(img, boxes, labels):
+def plot_image_with_boxes(img, boxes, labels, img_path):
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    plt.figure(figsize=(10, 10), dpi = 100)
+    plt.figure(figsize=(10, 10), dpi = 400)
     plt.imshow(img_rgb)
     
     for box, label in zip(boxes, labels):
@@ -94,8 +94,7 @@ def plot_image_with_boxes(img, boxes, labels):
         plt.gca().add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='red', linewidth=1))
         plt.text(xmin, ymin -25, str(itochamp[label]), color='red', fontsize=7)
 
-    plt.axis('off')
-    plt.show()
+    plt.savefig(img_path, bbox_inches='tight')
 
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
     """
@@ -353,7 +352,30 @@ def generate_cutout(img_path, annotation_path):
     # print(champion_box)
     return cutout, box_dict 
 
-def place_cutout(map_img, cutout, box_dict, x, y):
+def box_intersects_map_boxes(box, map_boxes, x_tolerance = 30, y_tolerance = 75):
+    """
+    Return if the box strays too much into a building (x or y coordinate is inside map box by x or y tolerance px).
+    :param box: Bounding box in PASCAL VOC format [x_min, y_min, x_max, y_max].
+    :param map_boxes: List of map bounding boxes in PASCAL VOC format.
+    :param tolerance: Tolerance in pixels for intersection.
+    """
+    x_min, y_min, x_max, y_max = box
+
+    for m in map_boxes:
+        mx0, my0, mx1, my1 = m
+
+        # compute overlap in each axis
+        x_overlap = max(0, min(x_max, mx1) - max(x_min, mx0))
+        y_overlap = max(0, min(y_max, my1) - max(y_min, my0))
+
+        # if overlap exceeds tolerance in either direction, it's “too far in”
+        if x_overlap > x_tolerance or y_overlap > y_tolerance:
+            return True
+
+    return False
+
+
+def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     """
     Place the cutout image on the map image at the specified coordinates,
     only pasting non-white pixels (to preserve transparency-like behavior).
@@ -365,6 +387,7 @@ def place_cutout(map_img, cutout, box_dict, x, y):
     :param box_dict: Dictionary containing bounding boxes for champion, pet, and ability.
     :param x: X-coordinate for placement (top-left).
     :param y: Y-coordinate for placement (top-left).
+    :param map_boxes: List of bounding boxes for the map image (to check if cutout is too far into a building).
     :return: Map image with the cutout placed.
     """
     mask_x_min, mask_y_min, mask_x_max, mask_y_max = box_dict['Mask'][0]
@@ -416,6 +439,8 @@ def place_cutout(map_img, cutout, box_dict, x, y):
                     y_max = int(y_max + y)
                     if x_max > map_img.shape[1] or y_max > map_img.shape[0]:
                         raise ValueError(f"Box {key} goes out of bounds: {box}")
+                    if box_intersects_map_boxes([x_min, y_min, x_max, y_max], box_dict['Mask']):
+                        raise ValueError(f"Box {key} intersects with map boxes: {box}")
                     if key == 'Pet':
                         new_pet_boxes.append([x_min, y_min, x_max, y_max])
                     else:
@@ -429,6 +454,7 @@ def place_cutout(map_img, cutout, box_dict, x, y):
                     x_max = min(map_img.shape[1], int(x_max - x_diff))
                     y_max = min(map_img.shape[0], int(y_max - y_diff))
                     box_dict[key] = [[ x_min, y_min, x_max, y_max ]]
+
     if len(new_pet_boxes):
         box_dict['Pet'] = new_pet_boxes
 
@@ -490,20 +516,10 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path):
     
     return cutouts_sorted, box_dicts_sorted, minion_cutouts, minion_box_dicts
 
-def is_far_enough(new_pos, existing_pos, min_dist = 100):
+def is_far_enough(new_pos, existing_pos, min_dist = 150):
     return all(np.linalg.norm(np.array(new_pos) - np.array(p)) > min_dist for p in existing_pos)
 
-def generate_grid_offsets(spacing=60, rows=3, cols=3):
-    """
-    Generate a grid of (dx, dy) offsets centered around (0,0).
-    """
-    x_offsets = [spacing * (i - cols // 2) for i in range(cols)]
-    y_offsets = [spacing * (j - rows // 2) for j in range(rows)]
-    offsets = list(product(x_offsets, y_offsets))
-    random.shuffle(offsets)  # Add randomness
-    return offsets
-
-def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = False, max_clusters = 5):
+def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, map_boxes, minions = False, max_clusters = 5):
     """
     Place multiple cutouts on the map image. 
     
@@ -511,41 +527,71 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = Fal
     :param cutouts: List of cutout images to be placed (HWC, RGB).
     :param box_dicts: List of dictionaries containing bounding boxes for each cutout.
     :param num_sprites: Number of sprites to place on the map.
+    :param map_boxes: Bounding boxes for the map image.
     :return: Map image with all cutouts placed.
     """        
 
     box_dict_all = {}
+    H, W = map_img.shape[:2]
+    # Poisson-disk parameters
+    # Reduce the minimum separation between cutouts the more sprites there are
+    MIN_SEP = 0.38 - num_sprites / 150  # minimum separation between cutouts (in px)
+    SCALE   = 30     # stddev of cluster spread (px)
+    MAX_TRIES = 750
     if minions:
-        # pick up to n random positions on the map and cluster the minions around them.
-        clusters = random.randint(2, max_clusters)
-        positions = [(random.randint(0, map_img.shape[1]), random.randint(0, map_img.shape[0])) for _ in range(clusters)]
+        # 1) pick a few cluster anchors
+        n_clusters = random.randint(2, max_clusters)
+        anchors = [
+            (random.randint(150, W - 150), random.randint(150, H - 150))
+            for _ in range(n_clusters)
+        ]
+
+        placed_centers = []  # list of (x, y, radius)
+        box_dict_all = {}
 
         for cutout, box_dict in zip(cutouts, box_dicts):
-            # Place the cutout around the center position
-            # the larger the number of minions, the more spread out they are with linearly scaling offsets  
-            attempts = 0
-            while attempts < 200:    
-                scale_factor = 1 + (num_sprites / 20)  
-                offset = int(100 * scale_factor)  # increase offset based on number of sprites
-                x_center, y_center = positions[random.randint(0, len(positions) - 1)]
+            h, w = cutout.shape[:2]
+            radius = max(w, h) * 0.5
 
-                x_offset = random.randint(-offset, offset)
-                y_offset = random.randint(-offset, offset)
-                x = x_center + x_offset
-                y = y_center + y_offset
-                try: 
-                    map_img, box_dict = place_cutout(map_img, cutout, box_dict, x, y)
-                    for key in box_dict:
-                        if len(box_dict[key]):
-                            if key not in box_dict_all:
-                                box_dict_all[key] = []
-                            box_dict_all[key].extend(box_dict[key])
+            attempts = 0
+            while attempts < MAX_TRIES:
+                # pick an anchor and jitter around it
+                x0, y0 = random.choice(anchors)
+                dx, dy = np.random.normal(scale=SCALE, size=2)
+                x_cand = int(x0 + dx)
+                y_cand = int(y0 + dy)
+
+                # 2a) keep inside bounds
+                if not (0 <= x_cand <= W - w and 0 <= y_cand <= H - h):
+                    attempts += 1
+                    continue
+
+                # 2b) cheap circle‐based overlap check
+                collision = False
+                for x_o, y_o, r_o in placed_centers:
+                    if np.hypot(x_cand - x_o, y_cand - y_o) < (radius + r_o) * MIN_SEP:
+                        collision = True
+                        break
+                if collision:
+                    attempts += 1
+                    continue
+
+                # 2c) attempt to paste—if it raises ValueError, count it and retry
+                try:
+                    map_img, placed = place_cutout(map_img, cutout, box_dict, x_cand, y_cand, map_boxes)
+                    # success!
+                    placed_centers.append((x_cand, y_cand, radius))
+                    for k, v in placed.items():
+                        if v:
+                            box_dict_all.setdefault(k, []).extend(v)
                     break
+
                 except ValueError:
                     attempts += 1
                     continue
+                
             else:
-                print(f"Failed to place minion cutout after 200 attempts, skipping this cutout.")
+                print(f"Failed to place one minion after {MAX_TRIES} attempts, skipping it.")
                 continue
     else:                    
         positions = []  # to track where cutouts have been placed
@@ -555,16 +601,16 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, minions = Fal
             max_x = map_img.shape[1] - cutout_w
             max_y = map_img.shape[0] - cutout_h
 
-            while attempts < 200:
+            while attempts < MAX_TRIES:
                 x = random.randint(0, max_x)
                 y = random.randint(0, max_y)
                 
                 if not is_far_enough((x, y), positions):
                     attempts += 1
-                    continue
+                    continue 
 
                 try:
-                    map_img, box_dict = place_cutout(map_img, cutout, box_dict, x, y)
+                    map_img, box_dict = place_cutout(map_img, cutout, box_dict, x, y, map_boxes)
                     positions.append((x, y))  # save successful placement
                     for key in box_dict:
                         if len(box_dict[key]):
@@ -1043,8 +1089,8 @@ def generate_synthetic_ds(img_dir: str,
         # Champions have mean 1 std 3 clamp to 1 to 10
         num_champions = int(np.clip(random.gauss(1, 3), 1, 10))
         # num_champions = 1
-        # Minions have mean 5 std 7 clamp to 0 to 20
-        num_minions = int(np.clip(random.gauss(5, 7), 0, 20))
+        # Minions have mean 6 std 7 clamp to 0 to 20
+        num_minions = int(np.clip(random.gauss(8, 5), 0, 20))
 
         champs_chosen = 0
         attempts = 0
@@ -1099,11 +1145,15 @@ def generate_synthetic_ds(img_dir: str,
         # Place champions & minions
         map_img, box_dict_champ = place_cutouts_on_map(
             map_img, champ_cutouts, champ_box_dicts,
-            num_champions
+            num_champions, map_boxes
         )
+
+        if not len(box_dict_champ):
+            continue 
+
         map_img, box_dict_minion = place_cutouts_on_map(
             map_img, minion_cutouts, minion_box_dicts,
-            num_minions, minions=True
+            num_minions, map_boxes, minions=True
         )
 
         # ─── weave in FX ──────────────────────────────────────────────────────────
@@ -1182,11 +1232,14 @@ def generate_synthetic_ds(img_dir: str,
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
         boxes_map, labels_map = get_boxes_from_box_dict(map_box_dict)
-
+        
         boxes = boxes_c + boxes_m + boxes_map
         labels = labels_c + labels_m + labels_map
-        cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        # plot_image_with_boxes(map_img, boxes, labels)
+        img_path = f'{output_dir}/{split}/map_{i:04d}.jpg'
+        print(img_path)
+        print(f"Champion boxes: {box_dict_champ}, Minion boxes: {box_dict_minion}, Map boxes: {map_box_dict}")
+        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
+        plot_image_with_boxes(map_img, boxes, labels, img_path)
 
 def main():
     import argparse
