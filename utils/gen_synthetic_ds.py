@@ -169,38 +169,30 @@ def chroma_key_with_glow_preservation(
     out = img_bgr.copy()
     out[strong_mask] = (255, 255, 255)
 
-    # Hue proximity to lime
-    proximity = 1.0 - (np.abs(h - (hsv_lower + hsv_upper) / 2) / ((hsv_upper - hsv_lower) / 2))
-    proximity = np.clip(proximity, 0, 1)
+    out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
 
-    lime_band = (h >= hsv_lower) & (h <= hsv_upper)
-    darken_mask = lime_band & ~strong_mask
+    # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
+    hue_center = (hsv_lower + hsv_upper) / 2
+    hue_range = (hsv_upper - hsv_lower) / 2
+    distance_from_lime = (np.abs(h - hue_center) / hue_range)
 
-    # Base darkening
-    strength = proximity * 0.8
+    non_white = np.any(img_bgr != [255, 255, 255], axis=-1)
+    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/max(hue_center, (180-1) - hue_center) / hue_range), 0, 1)
 
-    # Pets: always mild
-    strength[pet] *= 0.3
+    # compute per-pixel darkening factor in [0..1]
+    scale = np.clip(distance_from_lime * (255 - v * 0.5) * (1 - avg_proximity), 0, 255) / 255.0
 
-    # Champions: dynamic darkening (how green they are on avg)
-    for x_min, y_min, x_max, y_max in champ_boxes:
-        box_mask = np.zeros_like(region, dtype=bool)
-        box_mask[y_min:y_max, x_min:x_max] = True
+    # mask of “foreground” (any pixel that isn’t pure white)
+    fg = np.any(out[..., :3] != 255, axis=-1)
 
-        # Compute average proximity inside box
-        avg_prox = np.mean(proximity[box_mask])
+    # darken only those foreground pixels, channel by channel
+    for c in range(3):
+        ch = out[..., c].astype(np.float32)
+        ch[fg] *= scale[fg]
+        out[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
 
-        # More lime (avg_prox near 1) ➝ reduce darkening
-        box_strength = (1.0 - avg_prox)  # if fully lime, near 0
-        strength[box_mask] *= box_strength  # scale whole box by this
-
-    # Apply darkening
-    v[darken_mask] *= (1 - strength[darken_mask])
-
-    hsv[..., 2] = v
-    hsv = np.clip(hsv, 0, 255).astype(np.uint8)
-    darkened = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-    out[darken_mask] = darkened[darken_mask]
+    # leave the alpha as you originally intended
+    out[..., 3] = np.clip(distance_from_lime * (255 - v) * (1 - avg_proximity), 0, 255).astype(np.uint8)
 
     return out
   
@@ -252,7 +244,7 @@ def chroma_crop_out_white(img, box):
     cropped_img = img[y_min:int(y_max), x_min:int(x_max)]
     cropped_img = chroma_key_with_glow_preservation(cropped_img)
 
-    mask = cv2.inRange(img, (0, 0, 0), (255, 255, 255))
+    mask = cv2.inRange(img, (0, 0, 0, 0), (255, 255, 255, 1))
     mask = cv2.bitwise_not(mask)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
@@ -264,7 +256,10 @@ def chroma_crop_out_white(img, box):
         x_max = x + x_min + w
         y_max = y + y_min + h
         box = [x_min, y_min, x_max, y_max]
+        plt.imshow(cropped_img)
+        plt.show()
         return cropped_img, box
+
     else:
         # No contours found, return the cropped image and box
         return cropped_img, box
@@ -301,7 +296,6 @@ def generate_cutout(img_path, annotation_path):
         else:
             pet_boxes.append(box)
 
-    # print(itochamp[champion_label] in box_dict)
     # Check if champion/pet box is inside ability box or significant overlap
     for box in ability_boxes:
         if check_box_in_box(champion_box, box) or IoU(champion_box, box) > 0.9:
@@ -350,7 +344,6 @@ def generate_cutout(img_path, annotation_path):
             box_dict['Pet'].append([x_min_pet, y_min_pet, x_max_pet, y_max_pet])
             
     box_dict[itochamp[champion_label]].append(champion_box)
-    # print(champion_box)
     return cutout, box_dict 
 
 def place_cutout(map_img, cutout, box_dict, x, y):
@@ -436,13 +429,24 @@ def place_cutout(map_img, cutout, box_dict, x, y):
     cutout = cutout[:h, :w]
     roi = map_img[y:y + h, x:x + w, :]
 
-    # Create a mask for non-white pixels
-    mask = ~(np.all(cutout == [255, 255, 255], axis=-1))
+    # # Create a mask for non-white pixels
+    # mask = ~(np.all(cutout[...,:3] == [255, 255, 255], axis=-1))
+    # print(mask.shape)
 
-    # Broadcast mask to RGB
-    mask_rgb = np.stack([mask]*3, axis=-1)    
-    # Blend cutout into ROI using the mask
-    roi[mask_rgb] = cutout[mask_rgb]
+    # # Broadcast mask to RGB
+    # mask_rgb = np.stack([mask]*4, axis=-1)    
+    # # Blend cutout into ROI using the mask
+
+    # roi[mask_rgb] = cutout[mask_rgb]
+
+    # Compose using the cutout’s alpha channel
+    fg = cutout[:h, :w].astype(np.float32)           # RGBA
+    bg = roi.astype(np.float32)                       # BGRA
+    alpha = fg[..., 3:4] / 255.0                      # shape (h,w,1)
+
+    # Composite each channel: out = fg*α + bg*(1-α)
+    comp = fg[..., :4] * alpha + bg[..., :4] * (1 - alpha)
+    roi[:] = comp.astype(np.uint8)
 
     map_img[y:y + h, x:x + w] = roi
     return map_img, box_dict
@@ -714,11 +718,10 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, font = No
     healthbar_cropped = healthbar[y_offset:y_offset + cropped_h, x_offset:x_offset + cropped_w]
 
     if healthbar_cropped.shape[2] == 4:  # RGBA
-        alpha = healthbar_cropped[:, :, 3] / 255.0
-        for c in range(3):
-            roi[:, :, c] = (1 - alpha) * roi[:, :, c] + alpha * healthbar_cropped[:, :, c]
+        roi = healthbar_cropped
     else:
-        roi[:, :, :] = healthbar_cropped[:, :, :3]
+        roi[..., :3] = healthbar_cropped
+        roi[..., 3] = np.ones_like(healthbar_cropped[...,0])
 
     map_img[hb_y1_clamped:hb_y2_clamped, hb_x1_clamped:hb_x2_clamped] = roi
 
@@ -961,12 +964,11 @@ def fog_of_war(
     alpha = np.clip(alpha, 0.5, 1.0)  # never fully obscured
 
     # Define fog color (lighter than black to simulate in-game fog)
-    fog_color = np.array([32,14,4], dtype=np.float32)  # BGR – adjust for tone
+    fog_color = np.array([32,14,4,255], dtype=np.float32)  # BGR – adjust for tone
 
     # Blend between original image and fog color
     fogged_img = (
-        img.astype(np.float32) * (alpha**1.2)[..., None] + 
-        fog_color * (1.0 - (alpha**1.2)[..., None])
+        img.astype(np.float32) * (alpha**1.2)[..., None] + fog_color * (1.0 - (alpha**1.2)[..., None])
     ).astype(np.uint8)
 
     # Filter boxes in-place
@@ -1096,6 +1098,10 @@ def generate_synthetic_ds(img_dir: str,
         for box, label in zip(map_boxes, map_labels):
             map_box_dict[itochamp[label]].append(box)
 
+        map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2BGRA)
+        print(map_img.shape, champ_cutouts[0].shape)
+        # plt.imshow(map_img)
+        # plt.show()
         # Place champions & minions
         map_img, box_dict_champ = place_cutouts_on_map(
             map_img, champ_cutouts, champ_box_dicts,
@@ -1108,8 +1114,10 @@ def generate_synthetic_ds(img_dir: str,
 
         # ─── weave in FX ──────────────────────────────────────────────────────────
         # 1) convert to PIL RGBA
-        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB))\
-                    .convert("RGBA")
+        # pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB))\
+        #             .convert("RGBA")
+        rgba = cv2.cvtColor(map_img, cv2.COLOR_BGRA2RGBA)
+        pil_map = Image.fromarray(rgba, mode="RGBA")
 
         # 2) build cutout layers [(PIL_cutout, (x,y)), …]
         cutout_layers = []
@@ -1120,7 +1128,8 @@ def generate_synthetic_ds(img_dir: str,
             rgb = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2RGB)
 
             # 2) build a binary mask (1 where there's real pixels, 0 where white)
-            mask = np.any(cut_bgr != [255, 255, 255], axis=-1).astype(np.uint8)
+            white = np.array([255, 255, 255], dtype=cut_bgr.dtype)
+            mask = np.any(cut_bgr[:, :, :3] != white, axis=-1).astype(np.uint8)
 
             # → inject random translucency: 75% of the time pick a low-alpha, else high-alpha
             t = (
@@ -1131,6 +1140,17 @@ def generate_synthetic_ds(img_dir: str,
             alpha = (mask * t * 255).astype(np.uint8)
 
             # 3) stack into an H×W×4 RGBA image
+            if alpha.ndim == 2:
+                pass  # fine
+            elif alpha.ndim == 1:
+                alpha = alpha[:, np.newaxis]
+            else:
+                raise ValueError(f"Unexpected alpha shape: {alpha.shape}")
+
+            if alpha.shape != rgb.shape[:2]:
+                alpha = cv2.resize(alpha, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+            # 5) Stack RGBA
             rgba = np.dstack([rgb, alpha])
 
             # 4) convert to PIL with alpha channel
@@ -1149,11 +1169,11 @@ def generate_synthetic_ds(img_dir: str,
             fx_prob=0.4
         )
         # 5) back to OpenCV BGR
-        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
-        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB)).convert("RGBA")
+        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGRA)
+        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGRA2RGBA)).convert("RGBA")
         
         # Convert back to BGR OpenCV format
-        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
+        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGRA)
 
         # Add health bars
         font = load_font(font_path, size = 10)
