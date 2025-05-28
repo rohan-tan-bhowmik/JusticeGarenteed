@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import json
 from PIL import Image, ImageDraw, ImageFont
 
-from test_healthbar import process_healthbar_template, load_font
+from gen_healthbar import process_healthbar_template, load_font
 import xml.etree.ElementTree as ET
 
 import os
