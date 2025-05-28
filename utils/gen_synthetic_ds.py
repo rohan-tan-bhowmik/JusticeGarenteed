@@ -352,7 +352,7 @@ def generate_cutout(img_path, annotation_path):
     # print(champion_box)
     return cutout, box_dict 
 
-def box_intersects_map_boxes(box, map_boxes, x_tolerance = 30, y_tolerance = 75):
+def box_intersects_map_boxes(box, map_boxes, x_tolerance = 50, y_tolerance = 100):
     """
     Return if the box strays too much into a building (x or y coordinate is inside map box by x or y tolerance px).
     :param box: Bounding box in PASCAL VOC format [x_min, y_min, x_max, y_max].
@@ -374,7 +374,6 @@ def box_intersects_map_boxes(box, map_boxes, x_tolerance = 30, y_tolerance = 75)
 
     return False
 
-
 def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     """
     Place the cutout image on the map image at the specified coordinates,
@@ -387,7 +386,7 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     :param box_dict: Dictionary containing bounding boxes for champion, pet, and ability.
     :param x: X-coordinate for placement (top-left).
     :param y: Y-coordinate for placement (top-left).
-    :param map_boxes: List of bounding boxes for the map image (to check if cutout is too far into a building).
+    :param map_boxes: List of map bounding boxes to check for intersection.
     :return: Map image with the cutout placed.
     """
     mask_x_min, mask_y_min, mask_x_max, mask_y_max = box_dict['Mask'][0]
@@ -439,21 +438,27 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
                     y_max = int(y_max + y)
                     if x_max > map_img.shape[1] or y_max > map_img.shape[0]:
                         raise ValueError(f"Box {key} goes out of bounds: {box}")
-                    if box_intersects_map_boxes([x_min, y_min, x_max, y_max], box_dict['Mask']):
+                    elif box_intersects_map_boxes([x_min, y_min, x_max, y_max], map_boxes):
                         raise ValueError(f"Box {key} intersects with map boxes: {box}")
                     if key == 'Pet':
                         new_pet_boxes.append([x_min, y_min, x_max, y_max])
                     else:
                         box_dict[key] = [[ x_min, y_min, x_max, y_max ]]
-                    
-                else: 
+                        print(f"Champion box updated for {key} updated")
+                        print(box_dict)
+
+                else: # 'Mask' or 'Ability'
                     x_diff = box[0] - x
                     y_diff = box[1] - y
                     x_min = max(0, int(x_min - x_diff))
                     y_min = max(0, int(y_min - y_diff))
                     x_max = min(map_img.shape[1], int(x_max - x_diff))
                     y_max = min(map_img.shape[0], int(y_max - y_diff))
+                    if x_max > map_img.shape[1] or y_max > map_img.shape[0]:
+                        raise ValueError(f"Box {key} goes out of bounds: {box}")
                     box_dict[key] = [[ x_min, y_min, x_max, y_max ]]
+                    print("Mask box updated")
+                    print(box_dict)
 
     if len(new_pet_boxes):
         box_dict['Pet'] = new_pet_boxes
@@ -469,7 +474,7 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     mask_rgb = np.stack([mask]*3, axis=-1)    
     # Blend cutout into ROI using the mask
     roi[mask_rgb] = cutout[mask_rgb]
-
+    print(f"Pasting cutout at ({x}, {y}) with size ({h}, {w})")
     map_img[y:y + h, x:x + w] = roi
     return map_img, box_dict
   
@@ -489,7 +494,7 @@ def count_non_white_pixels(img):
     # Count non-white pixels
     return np.sum(non_white_mask)
 
-def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path):
+def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_boxes = None):
     """
     Generate cutouts for multiple images and their corresponding bounding boxes.
     
@@ -519,15 +524,15 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path):
 def is_far_enough(new_pos, existing_pos, min_dist = 150):
     return all(np.linalg.norm(np.array(new_pos) - np.array(p)) > min_dist for p in existing_pos)
 
-def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, map_boxes, minions = False, max_clusters = 5):
+def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, minions = False, max_clusters = 5):
     """
     Place multiple cutouts on the map image. 
     
     :param map_img: The map image (HWC, RGB) where the cutouts will be placed.
     :param cutouts: List of cutout images to be placed (HWC, RGB).
     :param box_dicts: List of dictionaries containing bounding boxes for each cutout.
+    :param map_boxes: List of map bounding boxes to check for intersection.
     :param num_sprites: Number of sprites to place on the map.
-    :param map_boxes: Bounding boxes for the map image.
     :return: Map image with all cutouts placed.
     """        
 
@@ -537,7 +542,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, map_boxes, mi
     # Reduce the minimum separation between cutouts the more sprites there are
     MIN_SEP = 0.38 - num_sprites / 150  # minimum separation between cutouts (in px)
     SCALE   = 30     # stddev of cluster spread (px)
-    MAX_TRIES = 750
+    MAX_TRIES = 2
     if minions:
         # 1) pick a few cluster anchors
         n_clusters = random.randint(2, max_clusters)
@@ -623,7 +628,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, num_sprites, map_boxes, mi
                     attempts += 1
                     continue
             else:
-                print(f"Failed to place champion cutout after 200 attempts, skipping this cutout.")
+                print(f"Failed to place champion cutout after {MAX_TRIES} attempts, skipping this cutout.")
                 continue
     
     return map_img, box_dict_all
@@ -1120,14 +1125,6 @@ def generate_synthetic_ds(img_dir: str,
             else:
                 minion_type = random.choice(['melee', 'caster'])
             minion_imgs.append(random.choice(minion_imgs_dict[minion_type]))
-
-        # Generate cutouts
-        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path)
-
-        # Ensure box_dicts are lists
-        champ_box_dicts = list(champ_box_dicts)
-        minion_box_dicts = list(minion_box_dicts)
-
         # Load map
         map_box_dict = {'RedNexus': [], 'BlueNexus': [], 'BlueTower': [], 'RedTower': [],
                         'BlueInhibitor': [], 'RedInhibitor': [], 'Pit': []}
@@ -1142,68 +1139,74 @@ def generate_synthetic_ds(img_dir: str,
         for box, label in zip(map_boxes, map_labels):
             map_box_dict[itochamp[label]].append(box)
 
+        # Generate cutouts
+        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
+
+        # Ensure box_dicts are lists
+        champ_box_dicts = list(champ_box_dicts)
+        minion_box_dicts = list(minion_box_dicts)
+
         # Place champions & minions
         map_img, box_dict_champ = place_cutouts_on_map(
             map_img, champ_cutouts, champ_box_dicts,
-            num_champions, map_boxes
+            map_boxes, 
+            num_champions
         )
-
-        if not len(box_dict_champ):
-            continue 
 
         map_img, box_dict_minion = place_cutouts_on_map(
             map_img, minion_cutouts, minion_box_dicts,
-            num_minions, map_boxes, minions=True
+            map_boxes, 
+            num_minions, minions=True
         )
 
-        # ─── weave in FX ──────────────────────────────────────────────────────────
-        # 1) convert to PIL RGBA
-        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB))\
-                    .convert("RGBA")
+        # # ─── weave in FX ──────────────────────────────────────────────────────────
+        # # 1) convert to PIL RGBA
+        # pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB))\
+        #             .convert("RGBA")
 
-        # 2) build cutout layers [(PIL_cutout, (x,y)), …]
-        cutout_layers = []
-        for cut_bgr, bd in zip(champ_cutouts, champ_box_dicts):
-            x0, y0 = bd['Mask'][0][:2]
+        # # 2) build cutout layers [(PIL_cutout, (x,y)), …]
+        # cutout_layers = []
+        # for cut_bgr, bd in zip(champ_cutouts, champ_box_dicts):
+        #     x0, y0 = bd['Mask'][0][:2]
 
-            # 1) convert BGR→RGB
-            rgb = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2RGB)
+        #     # 1) convert BGR→RGB
+        #     rgb = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2RGB)
 
-            # 2) build a binary mask (1 where there's real pixels, 0 where white)
-            mask = np.any(cut_bgr != [255, 255, 255], axis=-1).astype(np.uint8)
+        #     # 2) build a binary mask (1 where there's real pixels, 0 where white)
+        #     mask = np.any(cut_bgr != [255, 255, 255], axis=-1).astype(np.uint8)
 
-            # → inject random translucency: 75% of the time pick a low-alpha, else high-alpha
-            t = (
-                np.clip(random.gauss(0.25, 0.2), 0, 1)
-                if random.random() > 0.2
-                else np.clip(random.gauss(0.75, 0.2), 0, 1)
-            )
-            alpha = (mask * t * 255).astype(np.uint8)
+        #     # → inject random translucency: 75% of the time pick a low-alpha, else high-alpha
+        #     t = (
+        #         np.clip(random.gauss(0.25, 0.2), 0, 1)
+        #         if random.random() > 0.2
+        #         else np.clip(random.gauss(0.75, 0.2), 0, 1)
+        #     )
+        #     alpha = (mask * t * 255).astype(np.uint8)
 
-            # 3) stack into an H×W×4 RGBA image
-            rgba = np.dstack([rgb, alpha])
+        #     # 3) stack into an H×W×4 RGBA image
+        #     rgba = np.dstack([rgb, alpha])
 
-            # 4) convert to PIL with alpha channel
-            pil_cut = Image.fromarray(rgba, mode="RGBA")
+        #     # 4) convert to PIL with alpha channel
+        #     pil_cut = Image.fromarray(rgba, mode="RGBA")
 
-            cutout_layers.append((pil_cut, (x0, y0)))
+        #     cutout_layers.append((pil_cut, (x0, y0)))
 
-        # 3) load & distort FX
-        fx_instances = load_fx_images(fx_folder)
+        # # 3) load & distort FX
+        # fx_instances = load_fx_images(fx_folder)
 
-        # 4) weave under & over
-        pil_composed = weave_and_compose(
-            pil_map,
-            cutout_layers,
-            fx_instances,
-            fx_prob=0.4
-        )
-        # 5) back to OpenCV BGR
-        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
-        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB)).convert("RGBA")
+        # # 4) weave under & over
+        # pil_composed = weave_and_compose(
+        #     pil_map,
+        #     cutout_layers,
+        #     fx_instances,
+        #     fx_prob=0.4
+        # )
+        # # 5) back to OpenCV BGR
+        # map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
+        # pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB)).convert("RGBA")
         
-        # Convert back to BGR OpenCV format
-        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
+        # # Convert back to BGR OpenCV format
+        # map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
 
         # Add health bars
         font = load_font(font_path, size = 10)
@@ -1227,7 +1230,7 @@ def generate_synthetic_ds(img_dir: str,
         box_dict_minion.pop('Ability', None)
         box_dict_minion.pop('Mask', None)
 
-        map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
+        # map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
