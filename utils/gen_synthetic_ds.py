@@ -354,7 +354,7 @@ def count_non_white_pixels(img):
     :return: Number of non-white pixels.
     """
     # Define white color in RGB
-    white = np.array([255, 255, 255], dtype=np.uint8)
+    white = np.array([255, 255, 255, 255], dtype=np.uint8)
     
     # Create a mask for non-white pixels
     non_white_mask = np.any(img != white, axis=-1)
@@ -489,7 +489,6 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
                     # champion
                     updated_boxes = [[x0, y0, x1, y1]]
                     box_dict[key] = updated_boxes
-                    print(f"Champion box updated for {key}: {box_dict[key]}")
             else:
                 # mask or ability: adjust relative to placement
                 x_diff = box[0] - x
@@ -501,7 +500,6 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
                 if x1 > map_img.shape[1] or y1 > map_img.shape[0]:
                     raise ValueError(f"Box {key} goes out of bounds: {box}")
                 box_dict[key] = [[x0, y0, x1, y1]]
-                print("Mask/Ability box updated", box_dict[key])
 
         if key == 'Pet' and new_pet_boxes:
             box_dict['Pet'] = new_pet_boxes
@@ -1117,7 +1115,7 @@ def generate_synthetic_ds(img_dir: str,
             minion_imgs.append(random.choice(minion_imgs_dict[minion_type]))
         # Load map
         map_box_dict = {'RedNexus': [], 'BlueNexus': [], 'BlueTower': [], 'RedTower': [],
-                        'BlueInhibitor': [], 'RedInhibitor': [], 'Pit': []}
+                        'BlueInhibitor': [], 'RedInhibitor': []}
         map_img_path = random.choice(map_imgs)
         map_img = cv2.imread(map_img_path)
 
@@ -1127,7 +1125,8 @@ def generate_synthetic_ds(img_dir: str,
         map_boxes = convert_coco_to_pascal_voc(map_boxes)
 
         for box, label in zip(map_boxes, map_labels):
-            map_box_dict[itochamp[label]].append(box)
+            if itochamp[label] != 'Pit': # Ignore Pit box
+                map_box_dict[itochamp[label]].append(box)
 
         # Place champions & minions
         champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
@@ -1137,12 +1136,8 @@ def generate_synthetic_ds(img_dir: str,
         minion_box_dicts = list(minion_box_dicts)
 
         map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2BGRA)
-        print(map_img.shape, champ_cutouts[0].shape)
         # plt.imshow(map_img)
         # plt.show()
-
-
-
 
         map_img, box_dict_champ = place_cutouts_on_map(
             map_img, champ_cutouts, champ_box_dicts, map_boxes, num_champions
