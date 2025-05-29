@@ -86,7 +86,7 @@ def parse_coco_json(img_name, json_path):
 
 def plot_image_with_boxes(img, boxes, labels, output_dir, split, count):
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    plt.figure(figsize=(10, 10), dpi = 100)
+    plt.figure(figsize=(10, 10), dpi = 400)
     plt.imshow(img_rgb)
     
     for box, label in zip(boxes, labels):
@@ -94,10 +94,7 @@ def plot_image_with_boxes(img, boxes, labels, output_dir, split, count):
         plt.gca().add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='red', linewidth=1))
         plt.text(xmin, ymin -25, str(itochamp[label]), color='red', fontsize=7)
 
-    # plt.axis('off')
-    # plt.show()
     plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=500)
-
 
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
     """
@@ -348,8 +345,6 @@ def generate_cutout(img_path, annotation_path):
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
     return cutout, box_dict 
-
-
   
 def count_non_white_pixels(img):
     """
@@ -367,7 +362,7 @@ def count_non_white_pixels(img):
     # Count non-white pixels
     return np.sum(non_white_mask)
 
-def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path):
+def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_boxes = None):
     """
     Generate cutouts for multiple images and their corresponding bounding boxes.
     
@@ -394,7 +389,7 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path):
     
     return cutouts_sorted, box_dicts_sorted, minion_cutouts, minion_box_dicts
 
-def is_far_enough(new_pos, existing_pos, min_dist = 100):
+def is_far_enough(new_pos, existing_pos, min_dist = 150):
     return all(np.linalg.norm(np.array(new_pos) - np.array(p)) > min_dist for p in existing_pos)
 
 def generate_grid_offsets(spacing=60, rows=3, cols=3):
@@ -539,6 +534,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, mi
     MIN_SEP = 0.38 - num_sprites / 150  # minimum separation between cutouts (in px)
     SCALE   = 30     # stddev of cluster spread (px)
     MAX_TRIES = 800
+
     if minions:
         # 1) pick a few cluster anchors
         n_clusters = random.randint(2, max_clusters)
@@ -1088,8 +1084,8 @@ def generate_synthetic_ds(img_dir: str,
         # Champions have mean 1 std 3 clamp to 1 to 10
         num_champions = int(np.clip(random.gauss(1, 3), 1, 10))
         # num_champions = 1
-        # Minions have mean 5 std 7 clamp to 0 to 20
-        num_minions = int(np.clip(random.gauss(5, 7), 0, 20))
+        # Minions have mean 6 std 7 clamp to 0 to 20
+        num_minions = int(np.clip(random.gauss(8, 5), 0, 20))
 
         champs_chosen = 0
         attempts = 0
@@ -1119,14 +1115,6 @@ def generate_synthetic_ds(img_dir: str,
             else:
                 minion_type = random.choice(['melee', 'caster'])
             minion_imgs.append(random.choice(minion_imgs_dict[minion_type]))
-
-        # Generate cutouts
-        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path)
-
-        # Ensure box_dicts are lists
-        champ_box_dicts = list(champ_box_dicts)
-        minion_box_dicts = list(minion_box_dicts)
-
         # Load map
         map_box_dict = {'RedNexus': [], 'BlueNexus': [], 'BlueTower': [], 'RedTower': [],
                         'BlueInhibitor': [], 'RedInhibitor': [], 'Pit': []}
@@ -1145,12 +1133,13 @@ def generate_synthetic_ds(img_dir: str,
         print(map_img.shape, champ_cutouts[0].shape)
         # plt.imshow(map_img)
         # plt.show()
+
         # Place champions & minions
 
         map_img, box_dict_champ = place_cutouts_on_map(
-            map_img, champ_cutouts, champ_box_dicts,
-            map_boxes, num_champions
+            map_img, champ_cutouts, champ_box_dicts, map_boxes, num_champions
         )
+
         map_img, box_dict_minion = place_cutouts_on_map(
             map_img, minion_cutouts, minion_box_dicts,
             map_boxes, num_minions, minions=True
@@ -1241,14 +1230,15 @@ def generate_synthetic_ds(img_dir: str,
         box_dict_minion.pop('Ability', None)
         box_dict_minion.pop('Mask', None)
 
-        map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
+        # map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
         boxes_map, labels_map = get_boxes_from_box_dict(map_box_dict)
-
+        
         boxes = boxes_c + boxes_m + boxes_map
         labels = labels_c + labels_m + labels_map
+
         # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
         plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
 
