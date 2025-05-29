@@ -12,6 +12,7 @@ import os
 import random
 import argparse
 import math
+from coco_util import create_coco_dict, add_to_coco
 
 from tqdm import tqdm
 
@@ -493,7 +494,6 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
                     # champion
                     updated_boxes = [[x0, y0, x1, y1]]
                     box_dict[key] = updated_boxes
-                    print(f"Champion box updated for {key}: {box_dict[key]}")
             else:
                 # mask or ability: adjust relative to placement
                 x_diff = box[0] - x
@@ -505,7 +505,6 @@ def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
                 if x1 > map_img.shape[1] or y1 > map_img.shape[0]:
                     raise ValueError(f"Box {key} goes out of bounds: {box}")
                 box_dict[key] = [[x0, y0, x1, y1]]
-                print("Mask/Ability box updated", box_dict[key])
 
         if key == 'Pet' and new_pet_boxes:
             box_dict['Pet'] = new_pet_boxes
@@ -1105,6 +1104,8 @@ def generate_synthetic_ds(img_dir: str,
     :param champs_to_exclude: set of champion names to exclude from the dataset.
     :param images_per_unit: Number of images to generate per unit (champion or minion).
     """
+    rf_categories = data['categories']
+    coco_dict = create_coco_dict(rf_categories)
 
     # Load image paths
     img_dir = os.path.join(img_dir, split)
@@ -1176,7 +1177,7 @@ def generate_synthetic_ds(img_dir: str,
             minion_imgs.append(random.choice(minion_imgs_dict[minion_type]))
         # Load map
         map_box_dict = {'RedNexus': [], 'BlueNexus': [], 'BlueTower': [], 'RedTower': [],
-                        'BlueInhibitor': [], 'RedInhibitor': [], 'Pit': []}
+                        'BlueInhibitor': [], 'RedInhibitor': []}
         map_img_path = random.choice(map_imgs)
         map_img = cv2.imread(map_img_path)
 
@@ -1186,7 +1187,8 @@ def generate_synthetic_ds(img_dir: str,
         map_boxes = convert_coco_to_pascal_voc(map_boxes)
 
         for box, label in zip(map_boxes, map_labels):
-            map_box_dict[itochamp[label]].append(box)
+            if itochamp[label] != 'Pit': # Ignore Pit box
+                map_box_dict[itochamp[label]].append(box)
 
         # Place champions & minions
         champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
@@ -1196,12 +1198,8 @@ def generate_synthetic_ds(img_dir: str,
         minion_box_dicts = list(minion_box_dicts)
 
         map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2BGRA)
-        print(map_img.shape, champ_cutouts[0].shape)
         # plt.imshow(map_img)
         # plt.show()
-
-
-
 
         map_img, box_dict_champ = place_cutouts_on_map(
             map_img, champ_cutouts, champ_box_dicts, map_boxes, num_champions
@@ -1302,7 +1300,8 @@ def generate_synthetic_ds(img_dir: str,
         box_dict_minion.pop('Ability', None)
         box_dict_minion.pop('Mask', None)
 
-        # map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
+        if random.random() > 0.5:
+            map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
@@ -1371,6 +1370,13 @@ def generate_synthetic_ds(img_dir: str,
 
         # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
         plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
+        img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
+        add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
+        cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
+
+    # Save coco json file
+    with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
+        json.dump(coco_dict, f, indent=4)
 
 def main():
     import argparse
