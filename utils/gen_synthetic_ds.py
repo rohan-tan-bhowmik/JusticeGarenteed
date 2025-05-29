@@ -354,7 +354,7 @@ def count_non_white_pixels(img):
     :return: Number of non-white pixels.
     """
     # Define white color in RGB
-    white = np.array([255, 255, 255], dtype=np.uint8)
+    white = np.array([255, 255, 255, 255], dtype=np.uint8)
     
     # Create a mask for non-white pixels
     non_white_mask = np.any(img != white, axis=-1)
@@ -647,7 +647,7 @@ def get_boxes_from_box_dict(box_dict):
             labels.append(champtoi[key])
     return boxes, labels
 
-def add_healthbars(map_img, box_dict, mode, font, image_paths=None):
+def add_healthbars(map_img, box_dict, mode, color, font, image_paths=None):
     """
     Add health bars above each object (champion, minion) on the map image.
 
@@ -657,29 +657,36 @@ def add_healthbars(map_img, box_dict, mode, font, image_paths=None):
     :param image_paths: Required for mode="minions"; used to match team color.
     :return: Updated map image.
     """
+    healthbar_dir = "../cropped_healthbars"
+    healthbar_paths = [os.path.join(healthbar_dir, f) for f in os.listdir(healthbar_dir)
+                    if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        
+    red_healthbar_dir = "../synthetic_healthbars/red_minions"
+    blue_healthbar_dir = "../synthetic_healthbars/blue_minions"
+    red_paths = [os.path.join(red_healthbar_dir, f) for f in os.listdir(red_healthbar_dir)
+                if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    blue_paths = [os.path.join(blue_healthbar_dir, f) for f in os.listdir(blue_healthbar_dir)
+                if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+    
     if mode == "champs":
-        healthbar_dir = "../cropped_healthbars"
-        healthbar_paths = [os.path.join(healthbar_dir, f) for f in os.listdir(healthbar_dir)
-                           if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         for key, boxes in box_dict.items():
             if key in ['Mask', 'Ability']:
                 continue
             if key == 'Pet':
+                if color: 
+                    hb_paths = blue_paths
+                else:
+                    hb_paths = red_paths
                 for pet_box in boxes:
-                    map_img = _draw_healthbar(map_img, pet_box, healthbar_paths, font=font)
+                    map_img = _draw_healthbar(map_img, pet_box, hb_paths, color=color, font=None)
             else:
                 for box in boxes:
-                    map_img = _draw_healthbar(map_img, box, healthbar_paths, font = font)
+                    map_img = _draw_healthbar(map_img, box, healthbar_paths, color=color, font = font)
 
     elif mode == "minions":
         assert image_paths is not None, "image_paths is required for minion mode."
 
-        red_healthbar_dir = "../synthetic_healthbars/red_minions"
-        blue_healthbar_dir = "../synthetic_healthbars/blue_minions"
-        red_paths = [os.path.join(red_healthbar_dir, f) for f in os.listdir(red_healthbar_dir)
-                     if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
-        blue_paths = [os.path.join(blue_healthbar_dir, f) for f in os.listdir(blue_healthbar_dir)
-                      if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+       
 
         for minion, boxes in box_dict.items():
             if 'red' in minion.lower(): 
@@ -698,7 +705,7 @@ def add_healthbars(map_img, box_dict, mode, font, image_paths=None):
 
     return map_img
 
-def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, font = None):
+def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=False, font = None):
     """
     Draw a healthbar above a single bounding box.
 
@@ -720,10 +727,10 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, font = No
         sample_index = int(np.clip(sample_index, 0, num_healthbar_indices - 1))
         healthbar_path = sorted(healthbar_paths)[sample_index]
 
-        prob_blue = random.random()
-        to_blue = False
-        if prob_blue > 0.5:
-            to_blue = True
+        # prob_blue = random.random()
+        to_blue = color
+        # if prob_blue > 0.5:
+        #     to_blue = True
         healthbar = cv2.imread(healthbar_path, cv2.IMREAD_UNCHANGED)
         healthbar = process_healthbar_template(healthbar, damage_prob, to_blue, font = font)
     else:
@@ -1221,6 +1228,7 @@ def generate_synthetic_ds(img_dir: str,
         map_img = add_healthbars(
             map_img,
             box_dict_champ,
+            color=random.choice([True, False]),
             font = font,
             mode="champs"
         )
@@ -1229,7 +1237,8 @@ def generate_synthetic_ds(img_dir: str,
             map_img,
             box_dict_minion,
             mode="minions",
-            font = font,
+            color=random.choice([True, False]),
+            font=font,
             image_paths=minion_imgs
         )
 
