@@ -18,6 +18,8 @@ from tqdm import tqdm
 
 from itertools import product
 
+from gen_minimap import ImageDrawer
+
 # Cannon and siege minions have a lower chance of appearing
 CANNON_CHANCE = 0.15
 SIEGE_CHANCE = 0.05
@@ -44,6 +46,8 @@ with open(annotation_path, 'r') as f:
 for i, category in enumerate(data['categories']):
     champtoi[category['name']] = i
     itochamp[i] = category['name']
+
+minimap_drawer = ImageDrawer(resize=(256,256))
 
 def parse_pascal_voc_xml(xml_path):
     tree = ET.parse(xml_path)
@@ -131,13 +135,11 @@ def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5
   
 def chroma_key_with_glow_preservation(
     img_bgr: np.ndarray,
-    hsv_lower: int = 40,
-    hsv_upper: int = 80,
-    target_hue: int = 90,  # unused
+    hsv_lower: int = 45,
+    hsv_upper: int = 75,
     aggressive: bool = False,
     champ_boxes=None,
     pet_boxes=None,
-    ability_boxes=None  # unused for now
 ) -> np.ndarray:
     if champ_boxes is None: champ_boxes = []
     if pet_boxes is None: pet_boxes = []
@@ -170,6 +172,7 @@ def chroma_key_with_glow_preservation(
     out[strong_mask] = (255, 255, 255)
 
     out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
+    whiteness = (v / 255.0 + (255.0 - s) / 255.0) * 0.05 
 
     # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
     hue_center = (hsv_lower + hsv_upper) / 2
@@ -181,6 +184,8 @@ def chroma_key_with_glow_preservation(
 
     # compute per-pixel darkening factor in [0..1]
     scale = np.clip(distance_from_lime * (255 - v * 0.5) * (1 - avg_proximity), 0, 255) / 255.0
+    scale *= (1.0 - whiteness)
+
 
     # mask of “foreground” (any pixel that isn’t pure white)
     fg = np.any(out[..., :3] != 255, axis=-1)
@@ -1169,6 +1174,54 @@ def fog_of_war(
 
     return fogged_img
 
+def overlay_random_fx(base_img: np.ndarray, fx_folder: str, num_samples: int = 5) -> np.ndarray:
+    """
+    Sample `num_samples` random images from `fx_folder` (with alpha channels)
+    and alpha-blend each onto `base_img` at a random location.
+
+    :param base_img: H×W×4 BGRA image to draw onto.
+    :param fx_folder: path to a directory of .png/.jpg fx images (with transparency).
+    :param num_samples: how many fx sprites to overlay.
+    :return: the modified base_img (in-place).
+    """
+    # gather all image files
+    fx_paths = [
+        os.path.join(fx_folder, fn)
+        for fn in os.listdir(fx_folder)
+        if fn.lower().endswith(('.png', '.jpg', '.jpeg'))
+    ]
+    if not fx_paths:
+        return base_img
+
+    H, W = base_img.shape[:2]
+
+    for _ in range(num_samples):
+        # pick one at random
+        p = random.choice(fx_paths)
+        fx = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+        if fx is None or fx.shape[2] != 4:
+            continue
+
+        h, w = fx.shape[:2]
+        if h > H or w > W:
+            # skip if too big
+            continue
+
+        # random top-left corner
+        x = random.randint(0, W - w)
+        y = random.randint(0, H - h)
+
+        # split fg/bg and alpha
+        fg = fx[..., :3].astype(np.float32)
+        alpha = fx[..., 3:4].astype(np.float32) / 255.0
+        bg = base_img[y:y+h, x:x+w, :3].astype(np.float32)
+
+        # blend and write back
+        comp = (alpha * fg + (1 - alpha) * bg).astype(np.uint8)
+        base_img[y:y+h, x:x+w, :3] = comp
+
+    return base_img
+
 def generate_synthetic_ds(img_dir: str, 
     split: str, 
     fx_folder: str, 
@@ -1373,6 +1426,9 @@ def generate_synthetic_ds(img_dir: str,
             image_paths=minion_imgs
         )
 
+        if random.random() > 0.5:
+            map_img = overlay_random_fx(map_img, "../sample_hud", num_samples=1)
+
         # Clean up & plot
         box_dict_champ.pop('Mask', None)
         box_dict_minion.pop('Ability', None)
@@ -1388,6 +1444,66 @@ def generate_synthetic_ds(img_dir: str,
         boxes = boxes_c + boxes_m + boxes_map
         labels = labels_c + labels_m + labels_map
 
+        blacklist = [
+            ((952, 1080), (456, 1268)),   # (y0, y1), (x0, x1)
+            ((760, 1080), (1664, 1920)),
+            # add more if you like...
+        ]
+
+        filtered_boxes  = []
+        filtered_labels = []
+
+        for box, label in zip(boxes, labels):
+            xmin, ymin, xmax, ymax = box
+            box_area = (xmax - xmin) * (ymax - ymin)
+
+            # assume no intersection until proven otherwise
+            intersects = False
+
+            for (by0, by1), (bx0, bx1) in blacklist:
+                # compute intersection coordinates
+                inter_x0 = max(xmin, bx0)
+                inter_x1 = min(xmax, bx1)
+                inter_y0 = max(ymin, by0)
+                inter_y1 = min(ymax, by1)
+
+                # check that they actually overlap
+                if inter_x1 > inter_x0 and inter_y1 > inter_y0:
+                    inter_area = (inter_x1 - inter_x0) * (inter_y1 - inter_y0)
+                    # if more than 50% of the box is covered → drop
+                    if inter_area > 0.2 * box_area:
+                        intersects = True
+                        break
+
+            if not intersects:
+                filtered_boxes.append(box)
+                filtered_labels.append(label)
+
+        boxes, labels = filtered_boxes, filtered_labels
+
+
+
+        # minimap = generate_random_minimap()
+        # plt.imshow(minimap)
+        # plt.show()
+        if random.random() > 0.5:
+            minimap = cv2.cvtColor(minimap_drawer.get_minimap_np(), cv2.COLOR_BGR2RGB)
+            minimap_uint8 = (minimap * 255).astype(np.uint8)
+            map_img[-256:, -256:, :3] = minimap_uint8
+            map_img[-256:, -256:,  3] = 255
+
+        if random.random() > 0.5:
+            folder = "league_icons/champions"
+            imgs = [f for f in os.listdir(folder) if f.lower().endswith(('.png','.jpg','.jpeg'))]
+
+            for j in range(4):
+                icon = cv2.cvtColor(cv2.resize(plt.imread(os.path.join(folder, random.choice(imgs))), dsize=(64,64)), cv2.COLOR_BGRA2RGBA)
+                icon_uint8 = (icon * 255).astype(np.uint8)
+                map_img[-320:-256, -256+64*j - 1:-256+64*j+64 - 1, :] = icon_uint8
+
+
+        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
+        plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
         img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
         # add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
         # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
