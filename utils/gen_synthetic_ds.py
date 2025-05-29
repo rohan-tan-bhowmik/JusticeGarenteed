@@ -348,13 +348,14 @@ def expand_cutout(cutout: np.ndarray,
 
     return resized, champ_box_adj, mask_box_adj
 
-def generate_cutout(img_path, annotation_path):
+def generate_cutout(img_path, annotation_path, minion=False):
     """
     Generate a cutout image from the original image and its corresponding XML file.
     Returns cutout and a dictionary with bounding boxes for champion, pet, and ability in PASCAL VOC format.
     
     :param img_path: Path to the input image file.
     :param xml_path: Path to the corresponding XML file.
+    :param minion: Boolean indicating if the image is a minion image (default is False).
     :return: Cutout image with green screen removed.
     """
     img = cv2.imread(img_path)
@@ -414,7 +415,7 @@ def generate_cutout(img_path, annotation_path):
     champion_box = [x_min_champ, y_min_champ, x_max_champ, y_max_champ]
     
     # Provide a random chance to expand the cutout
-    if random.random() < 0.5:
+    if not minion and random.random() < 0.5:  # skip if it's a red or blue minion 
         cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor=4/3)
 
     # Add the mask box to the box_dict
@@ -471,7 +472,7 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_
         box_dicts.append(box_dict)
     
     for img_path in minion_img_paths:
-        cutout, box_dict = generate_cutout(img_path, annotation_path)
+        cutout, box_dict = generate_cutout(img_path, annotation_path, minion=True)
         minion_cutouts.append(cutout)
         minion_box_dicts.append(box_dict)
 
@@ -1388,12 +1389,12 @@ def generate_synthetic_ds(img_dir: str,
         labels = labels_c + labels_m + labels_map
 
         img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
-        add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
-        cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        # plot_image_with_boxes(
-        #     map_img, boxes, labels, 
-        #     output_dir, split, count = i
-        # )
+        # add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
+        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
+        plot_image_with_boxes(
+            map_img, boxes, labels, 
+            output_dir, split, count = i
+        )
 
     # Save coco json file
     with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
