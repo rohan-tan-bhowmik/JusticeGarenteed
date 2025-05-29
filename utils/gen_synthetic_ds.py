@@ -135,13 +135,11 @@ def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5
   
 def chroma_key_with_glow_preservation(
     img_bgr: np.ndarray,
-    hsv_lower: int = 40,
-    hsv_upper: int = 80,
-    target_hue: int = 90,  # unused
+    hsv_lower: int = 45,
+    hsv_upper: int = 75,
     aggressive: bool = False,
     champ_boxes=None,
     pet_boxes=None,
-    ability_boxes=None  # unused for now
 ) -> np.ndarray:
     if champ_boxes is None: champ_boxes = []
     if pet_boxes is None: pet_boxes = []
@@ -174,6 +172,7 @@ def chroma_key_with_glow_preservation(
     out[strong_mask] = (255, 255, 255)
 
     out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
+    whiteness = (v / 255.0 + (255.0 - s) / 255.0) * 0.05 
 
     # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
     hue_center = (hsv_lower + hsv_upper) / 2
@@ -185,6 +184,8 @@ def chroma_key_with_glow_preservation(
 
     # compute per-pixel darkening factor in [0..1]
     scale = np.clip(distance_from_lime * (255 - v * 0.5) * (1 - avg_proximity), 0, 255) / 255.0
+    scale *= (1.0 - whiteness)
+
 
     # mask of “foreground” (any pixel that isn’t pure white)
     fg = np.any(out[..., :3] != 255, axis=-1)
