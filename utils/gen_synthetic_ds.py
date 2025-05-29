@@ -84,7 +84,7 @@ def parse_coco_json(img_name, json_path):
 
     return boxes, labels
 
-def plot_image_with_boxes(img, boxes, labels, img_path):
+def plot_image_with_boxes(img, boxes, labels, output_dir, split, count):
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     plt.figure(figsize=(10, 10), dpi = 400)
     plt.imshow(img_rgb)
@@ -94,7 +94,7 @@ def plot_image_with_boxes(img, boxes, labels, img_path):
         plt.gca().add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='red', linewidth=1))
         plt.text(xmin, ymin -25, str(itochamp[label]), color='red', fontsize=7)
 
-    plt.savefig(img_path, bbox_inches='tight')
+    plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=500)
 
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
     """
@@ -168,38 +168,30 @@ def chroma_key_with_glow_preservation(
     out = img_bgr.copy()
     out[strong_mask] = (255, 255, 255)
 
-    # Hue proximity to lime
-    proximity = 1.0 - (np.abs(h - (hsv_lower + hsv_upper) / 2) / ((hsv_upper - hsv_lower) / 2))
-    proximity = np.clip(proximity, 0, 1)
+    out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
 
-    lime_band = (h >= hsv_lower) & (h <= hsv_upper)
-    darken_mask = lime_band & ~strong_mask
+    # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
+    hue_center = (hsv_lower + hsv_upper) / 2
+    hue_range = (hsv_upper - hsv_lower) / 2
+    distance_from_lime = (np.abs(h - hue_center) / hue_range)
 
-    # Base darkening
-    strength = proximity * 0.8
+    non_white = np.any(img_bgr != [255, 255, 255], axis=-1)
+    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/max(hue_center, (180-1) - hue_center) / hue_range), 0, 1)
 
-    # Pets: always mild
-    strength[pet] *= 0.3
+    # compute per-pixel darkening factor in [0..1]
+    scale = np.clip(distance_from_lime * (255 - v * 0.5) * (1 - avg_proximity), 0, 255) / 255.0
 
-    # Champions: dynamic darkening (how green they are on avg)
-    for x_min, y_min, x_max, y_max in champ_boxes:
-        box_mask = np.zeros_like(region, dtype=bool)
-        box_mask[y_min:y_max, x_min:x_max] = True
+    # mask of “foreground” (any pixel that isn’t pure white)
+    fg = np.any(out[..., :3] != 255, axis=-1)
 
-        # Compute average proximity inside box
-        avg_prox = np.mean(proximity[box_mask])
+    # darken only those foreground pixels, channel by channel
+    for c in range(3):
+        ch = out[..., c].astype(np.float32)
+        ch[fg] *= scale[fg]
+        out[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
 
-        # More lime (avg_prox near 1) ➝ reduce darkening
-        box_strength = (1.0 - avg_prox)  # if fully lime, near 0
-        strength[box_mask] *= box_strength  # scale whole box by this
-
-    # Apply darkening
-    v[darken_mask] *= (1 - strength[darken_mask])
-
-    hsv[..., 2] = v
-    hsv = np.clip(hsv, 0, 255).astype(np.uint8)
-    darkened = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-    out[darken_mask] = darkened[darken_mask]
+    # leave the alpha as you originally intended
+    out[..., 3] = np.clip(distance_from_lime * (255 - v) * (1 - avg_proximity), 0, 255).astype(np.uint8)
 
     return out
   
@@ -251,7 +243,7 @@ def chroma_crop_out_white(img, box):
     cropped_img = img[y_min:int(y_max), x_min:int(x_max)]
     cropped_img = chroma_key_with_glow_preservation(cropped_img)
 
-    mask = cv2.inRange(img, (0, 0, 0), (255, 255, 255))
+    mask = cv2.inRange(img, (0, 0, 0, 0), (255, 255, 255, 1))
     mask = cv2.bitwise_not(mask)
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
@@ -263,7 +255,10 @@ def chroma_crop_out_white(img, box):
         x_max = x + x_min + w
         y_max = y + y_min + h
         box = [x_min, y_min, x_max, y_max]
+        plt.imshow(cropped_img)
+        plt.show()
         return cropped_img, box
+
     else:
         # No contours found, return the cropped image and box
         return cropped_img, box
@@ -300,7 +295,6 @@ def generate_cutout(img_path, annotation_path):
         else:
             pet_boxes.append(box)
 
-    # print(itochamp[champion_label] in box_dict)
     # Check if champion/pet box is inside ability box or significant overlap
     for box in ability_boxes:
         if check_box_in_box(champion_box, box) or IoU(champion_box, box) > 0.9:
@@ -348,135 +342,9 @@ def generate_cutout(img_path, annotation_path):
             y_max_pet = min(cutout.shape[0], int(y_max_pet - y_min))
             box_dict['Pet'].append([x_min_pet, y_min_pet, x_max_pet, y_max_pet])
             
-    box_dict[itochamp[champion_label]].append(champion_box)
-    # print(champion_box)
+    # box_dict[itochamp[champion_label]].append(champion_box)
+    box_dict[itochamp[champion_label]] = [champion_box]
     return cutout, box_dict 
-
-def box_intersects_map_boxes(box, map_boxes, x_tolerance = 50, y_tolerance = 100):
-    """
-    Return if the box strays too much into a building (x or y coordinate is inside map box by x or y tolerance px).
-    :param box: Bounding box in PASCAL VOC format [x_min, y_min, x_max, y_max].
-    :param map_boxes: List of map bounding boxes in PASCAL VOC format.
-    :param tolerance: Tolerance in pixels for intersection.
-    """
-    x_min, y_min, x_max, y_max = box
-
-    for m in map_boxes:
-        mx0, my0, mx1, my1 = m
-
-        # compute overlap in each axis
-        x_overlap = max(0, min(x_max, mx1) - max(x_min, mx0))
-        y_overlap = max(0, min(y_max, my1) - max(y_min, my0))
-
-        # if overlap exceeds tolerance in either direction, it's “too far in”
-        if x_overlap > x_tolerance or y_overlap > y_tolerance:
-            return True
-
-    return False
-
-def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
-    """
-    Place the cutout image on the map image at the specified coordinates,
-    only pasting non-white pixels (to preserve transparency-like behavior).
-    If the original mask box/champion box hugs a side of the image, the cutout can only be placed along that side.
-    Abilities can be placed anywhere (even cut off the map) but champions and pets must be placed within the map bounds
-
-    :param map_img: The map image (HWC, RGB) where the cutout will be placed.
-    :param cutout: The cutout image to be placed (HWC, RGB).
-    :param box_dict: Dictionary containing bounding boxes for champion, pet, and ability.
-    :param x: X-coordinate for placement (top-left).
-    :param y: Y-coordinate for placement (top-left).
-    :param map_boxes: List of map bounding boxes to check for intersection.
-    :return: Map image with the cutout placed.
-    """
-    mask_x_min, mask_y_min, mask_x_max, mask_y_max = box_dict['Mask'][0]
-    champ_name = ""
-    for key in box_dict:
-        if key != 'Mask' and key != 'Ability' and key != 'Pet':
-            champ_name = key
-            break
-
-    champ_x_min, champ_y_min, champ_x_max, champ_y_max = box_dict[champ_name][0]
-    # Check if cutout hugs side of image. If so, we can only place it along that side.
-    if mask_x_min == 1 or champ_x_min == 1:
-        x = 0
-    if mask_y_min == 1 or champ_y_min == 1:
-        y = 0
-    if mask_x_max == map_img.shape[1] or champ_x_max == map_img.shape[1]:
-        x = map_img.shape[1] - cutout.shape[1]
-        # print(f"Cutout hugs right side of image, placing at x={x}")
-    if mask_y_max == map_img.shape[0] or champ_y_max == map_img.shape[0]:
-        y = map_img.shape[0] - cutout.shape[0]
-        # print(f"Cutout hugs bottom side of image, placing at y={y}")
-
-    x = max(0, min(x, map_img.shape[1] - 1))
-    y = max(0, min(y, map_img.shape[0] - 1))
-
-    # If placing the cutout makes the ability box go out of bounds, you can do so but up until the champion box hugging
-    # the border of the image
-    orig_h, orig_w = cutout.shape[:2]
-    h = max(0, min(orig_h, map_img.shape[0] - y))
-    w = max(0, min(orig_w, map_img.shape[1] - x))
-
-    if h == 0 or w == 0:
-        # print(f"Cutout at ({x}, {y}) with size ({h}, {w}) is out of bounds, skipping placement.")
-        return map_img, box_dict
-
-    # print(f"Placing cutout at ({x}, {y}) with size ({h}, {w})")
-    
-    # Update the bounding boxes in box_dict to be relative to the map image
-    new_pet_boxes = []
-    for key in box_dict:
-        if len(box_dict[key]):
-            for box in box_dict[key]:
-                x_min, y_min, x_max, y_max = box
-                if key != 'Mask' and key != 'Ability':
-                    # Just shift the champion/pet box
-                    x_min = max(0, int(x_min + x))
-                    y_min = max(0, int(y_min + y))
-                    x_max = int(x_max + x)
-                    y_max = int(y_max + y)
-                    if x_max > map_img.shape[1] or y_max > map_img.shape[0]:
-                        raise ValueError(f"Box {key} goes out of bounds: {box}")
-                    elif box_intersects_map_boxes([x_min, y_min, x_max, y_max], map_boxes):
-                        raise ValueError(f"Box {key} intersects with map boxes: {box}")
-                    if key == 'Pet':
-                        new_pet_boxes.append([x_min, y_min, x_max, y_max])
-                    else:
-                        box_dict[key] = [[ x_min, y_min, x_max, y_max ]]
-                        print(f"Champion box updated for {key} updated")
-                        print(box_dict)
-
-                else: # 'Mask' or 'Ability'
-                    x_diff = box[0] - x
-                    y_diff = box[1] - y
-                    x_min = max(0, int(x_min - x_diff))
-                    y_min = max(0, int(y_min - y_diff))
-                    x_max = min(map_img.shape[1], int(x_max - x_diff))
-                    y_max = min(map_img.shape[0], int(y_max - y_diff))
-                    if x_max > map_img.shape[1] or y_max > map_img.shape[0]:
-                        raise ValueError(f"Box {key} goes out of bounds: {box}")
-                    box_dict[key] = [[ x_min, y_min, x_max, y_max ]]
-                    print("Mask box updated")
-                    print(box_dict)
-
-    if len(new_pet_boxes):
-        box_dict['Pet'] = new_pet_boxes
-
-    # Crop region of interest (ROI) from the map image
-    cutout = cutout[:h, :w]
-    roi = map_img[y:y + h, x:x + w, :]
-
-    # Create a mask for non-white pixels
-    mask = ~(np.all(cutout == [255, 255, 255], axis=-1))
-
-    # Broadcast mask to RGB
-    mask_rgb = np.stack([mask]*3, axis=-1)    
-    # Blend cutout into ROI using the mask
-    roi[mask_rgb] = cutout[mask_rgb]
-    print(f"Pasting cutout at ({x}, {y}) with size ({h}, {w})")
-    map_img[y:y + h, x:x + w] = roi
-    return map_img, box_dict
   
 def count_non_white_pixels(img):
     """
@@ -524,6 +392,129 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_
 def is_far_enough(new_pos, existing_pos, min_dist = 150):
     return all(np.linalg.norm(np.array(new_pos) - np.array(p)) > min_dist for p in existing_pos)
 
+def generate_grid_offsets(spacing=60, rows=3, cols=3):
+    """
+    Generate a grid of (dx, dy) offsets centered around (0,0).
+    """
+    x_offsets = [spacing * (i - cols // 2) for i in range(cols)]
+    y_offsets = [spacing * (j - rows // 2) for j in range(rows)]
+    offsets = list(product(x_offsets, y_offsets))
+    random.shuffle(offsets)  # Add randomness
+    return offsets
+
+def box_intersects_map_boxes(box, map_boxes, x_tolerance = 50, y_tolerance = 100):
+    """
+    Return if the box strays too much into a building (x or y coordinate is inside map box by x or y tolerance px).
+    :param box: Bounding box in PASCAL VOC format [x_min, y_min, x_max, y_max].
+    :param map_boxes: List of map bounding boxes in PASCAL VOC format.
+    :param tolerance: Tolerance in pixels for intersection.
+    """
+    x_min, y_min, x_max, y_max = box
+
+    for m in map_boxes:
+        mx0, my0, mx1, my1 = m
+
+        # compute overlap in each axis
+        x_overlap = max(0, min(x_max, mx1) - max(x_min, mx0))
+        y_overlap = max(0, min(y_max, my1) - max(y_min, my0))
+
+        # if overlap exceeds tolerance in either direction, it's “too far in”
+        if x_overlap > x_tolerance or y_overlap > y_tolerance:
+            return True
+
+    return False
+
+def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
+    """
+    Place the cutout image on the map image at the specified coordinates,
+    only pasting non-white pixels (to preserve transparency-like behavior).
+    If the original mask box/champion box hugs a side of the image, the cutout can only be placed along that side.
+    Abilities can be placed anywhere (even cut off the map) but champions and pets must be placed within the map bounds.
+
+    :param map_img: The map image (HWC, RGB) where the cutout will be placed.
+    :param cutout: The cutout image to be placed (HWC, RGBA).
+    :param box_dict: Dictionary containing bounding boxes for champion, pet, and ability.
+    :param x: X-coordinate for placement (top-left).
+    :param y: Y-coordinate for placement (top-left).
+    :param map_boxes: List of map bounding boxes in PASCAL VOC format to check for intersection.
+    :return: Updated map_img and adjusted box_dict.
+    """
+    mask_x_min, mask_y_min, mask_x_max, mask_y_max = box_dict['Mask'][0]
+    champ_name = next(k for k in box_dict if k not in ('Mask', 'Ability', 'Pet'))
+    champ_x_min, champ_y_min, champ_x_max, champ_y_max = box_dict[champ_name][0]
+
+    # Constrain placement if cutout hugs map edges
+    if mask_x_min == 1 or champ_x_min == 1:
+        x = 0
+    if mask_y_min == 1 or champ_y_min == 1:
+        y = 0
+    if mask_x_max == map_img.shape[1] or champ_x_max == map_img.shape[1]:
+        x = map_img.shape[1] - cutout.shape[1]
+    if mask_y_max == map_img.shape[0] or champ_y_max == map_img.shape[0]:
+        y = map_img.shape[0] - cutout.shape[0]
+
+    # Clamp to image bounds
+    x = max(0, min(x, map_img.shape[1] - 1))
+    y = max(0, min(y, map_img.shape[0] - 1))
+
+    orig_h, orig_w = cutout.shape[:2]
+    h = max(0, min(orig_h, map_img.shape[0] - y))
+    w = max(0, min(orig_w, map_img.shape[1] - x))
+    if h == 0 or w == 0:
+        return map_img, box_dict
+
+    # Update bounding boxes relative to the map
+    new_pet_boxes = []
+    for key, blist in list(box_dict.items()):
+        if not blist:
+            continue
+        updated_boxes = []
+        for box in blist:
+            x_min, y_min, x_max, y_max = box
+            if key not in ('Mask', 'Ability'):
+                # shift champion/pet boxes
+                x0 = max(0, int(x_min + x))
+                y0 = max(0, int(y_min + y))
+                x1 = int(x_max + x)
+                y1 = int(y_max + y)
+                # bounds and map intersection checks
+                if x1 > map_img.shape[1] or y1 > map_img.shape[0]:
+                    raise ValueError(f"Box {key} goes out of bounds: {box}")
+                if box_intersects_map_boxes([x0, y0, x1, y1], map_boxes):
+                    raise ValueError(f"Box {key} intersects with map boxes: {[x0, y0, x1, y1]}")
+
+                if key == 'Pet':
+                    new_pet_boxes.append([x0, y0, x1, y1])
+                else:
+                    # champion
+                    updated_boxes = [[x0, y0, x1, y1]]
+                    box_dict[key] = updated_boxes
+                    print(f"Champion box updated for {key}: {box_dict[key]}")
+            else:
+                # mask or ability: adjust relative to placement
+                x_diff = box[0] - x
+                y_diff = box[1] - y
+                x0 = max(0, int(box[0] - x_diff))
+                y0 = max(0, int(box[1] - y_diff))
+                x1 = min(map_img.shape[1], int(box[2] - x_diff))
+                y1 = min(map_img.shape[0], int(box[3] - y_diff))
+                if x1 > map_img.shape[1] or y1 > map_img.shape[0]:
+                    raise ValueError(f"Box {key} goes out of bounds: {box}")
+                box_dict[key] = [[x0, y0, x1, y1]]
+                print("Mask/Ability box updated", box_dict[key])
+
+        if key == 'Pet' and new_pet_boxes:
+            box_dict['Pet'] = new_pet_boxes
+
+    # Composite cutout onto map
+    roi = map_img[y:y+h, x:x+w].astype(np.float32)
+    fg = cutout[:h, :w].astype(np.float32)
+    alpha = fg[..., 3:4] / 255.0
+    comp = fg[..., :4] * alpha + roi * (1 - alpha)
+    map_img[y:y+h, x:x+w] = comp.astype(np.uint8)
+
+    return map_img, box_dict
+
 def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, minions = False, max_clusters = 5):
     """
     Place multiple cutouts on the map image. 
@@ -542,7 +533,8 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, mi
     # Reduce the minimum separation between cutouts the more sprites there are
     MIN_SEP = 0.38 - num_sprites / 150  # minimum separation between cutouts (in px)
     SCALE   = 30     # stddev of cluster spread (px)
-    MAX_TRIES = 2
+    MAX_TRIES = 800
+
     if minions:
         # 1) pick a few cluster anchors
         n_clusters = random.randint(2, max_clusters)
@@ -765,11 +757,10 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, font = No
     healthbar_cropped = healthbar[y_offset:y_offset + cropped_h, x_offset:x_offset + cropped_w]
 
     if healthbar_cropped.shape[2] == 4:  # RGBA
-        alpha = healthbar_cropped[:, :, 3] / 255.0
-        for c in range(3):
-            roi[:, :, c] = (1 - alpha) * roi[:, :, c] + alpha * healthbar_cropped[:, :, c]
+        roi = healthbar_cropped
     else:
-        roi[:, :, :] = healthbar_cropped[:, :, :3]
+        roi[..., :3] = healthbar_cropped
+        roi[..., 3] = np.ones_like(healthbar_cropped[...,0])
 
     map_img[hb_y1_clamped:hb_y2_clamped, hb_x1_clamped:hb_x2_clamped] = roi
 
@@ -1012,12 +1003,11 @@ def fog_of_war(
     alpha = np.clip(alpha, 0.5, 1.0)  # never fully obscured
 
     # Define fog color (lighter than black to simulate in-game fog)
-    fog_color = np.array([32,14,4], dtype=np.float32)  # BGR – adjust for tone
+    fog_color = np.array([32,14,4,255], dtype=np.float32)  # BGR – adjust for tone
 
     # Blend between original image and fog color
     fogged_img = (
-        img.astype(np.float32) * (alpha**1.2)[..., None] + 
-        fog_color * (1.0 - (alpha**1.2)[..., None])
+        img.astype(np.float32) * (alpha**1.2)[..., None] + fog_color * (1.0 - (alpha**1.2)[..., None])
     ).astype(np.uint8)
 
     # Filter boxes in-place
@@ -1139,74 +1129,84 @@ def generate_synthetic_ds(img_dir: str,
         for box, label in zip(map_boxes, map_labels):
             map_box_dict[itochamp[label]].append(box)
 
-        # Generate cutouts
-        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
-
-        # Ensure box_dicts are lists
-        champ_box_dicts = list(champ_box_dicts)
-        minion_box_dicts = list(minion_box_dicts)
+        map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2BGRA)
+        print(map_img.shape, champ_cutouts[0].shape)
+        # plt.imshow(map_img)
+        # plt.show()
 
         # Place champions & minions
+
         map_img, box_dict_champ = place_cutouts_on_map(
-            map_img, champ_cutouts, champ_box_dicts,
-            map_boxes, 
-            num_champions
+            map_img, champ_cutouts, champ_box_dicts, map_boxes, num_champions
         )
 
         map_img, box_dict_minion = place_cutouts_on_map(
             map_img, minion_cutouts, minion_box_dicts,
-            map_boxes, 
-            num_minions, minions=True
+            map_boxes, num_minions, minions=True
         )
 
-        # # ─── weave in FX ──────────────────────────────────────────────────────────
-        # # 1) convert to PIL RGBA
+        # ─── weave in FX ──────────────────────────────────────────────────────────
+        # 1) convert to PIL RGBA
         # pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB))\
         #             .convert("RGBA")
+        rgba = cv2.cvtColor(map_img, cv2.COLOR_BGRA2RGBA)
+        pil_map = Image.fromarray(rgba, mode="RGBA")
 
-        # # 2) build cutout layers [(PIL_cutout, (x,y)), …]
-        # cutout_layers = []
-        # for cut_bgr, bd in zip(champ_cutouts, champ_box_dicts):
-        #     x0, y0 = bd['Mask'][0][:2]
+        # 2) build cutout layers [(PIL_cutout, (x,y)), …]
+        cutout_layers = []
+        for cut_bgr, bd in zip(champ_cutouts, champ_box_dicts):
+            x0, y0 = bd['Mask'][0][:2]
 
-        #     # 1) convert BGR→RGB
-        #     rgb = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2RGB)
+            # 1) convert BGR→RGB
+            rgb = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2RGB)
 
-        #     # 2) build a binary mask (1 where there's real pixels, 0 where white)
-        #     mask = np.any(cut_bgr != [255, 255, 255], axis=-1).astype(np.uint8)
+            # 2) build a binary mask (1 where there's real pixels, 0 where white)
+            white = np.array([255, 255, 255], dtype=cut_bgr.dtype)
+            mask = np.any(cut_bgr[:, :, :3] != white, axis=-1).astype(np.uint8)
 
-        #     # → inject random translucency: 75% of the time pick a low-alpha, else high-alpha
-        #     t = (
-        #         np.clip(random.gauss(0.25, 0.2), 0, 1)
-        #         if random.random() > 0.2
-        #         else np.clip(random.gauss(0.75, 0.2), 0, 1)
-        #     )
-        #     alpha = (mask * t * 255).astype(np.uint8)
+            # → inject random translucency: 75% of the time pick a low-alpha, else high-alpha
+            t = (
+                np.clip(random.gauss(0.25, 0.2), 0, 1)
+                if random.random() > 0.2
+                else np.clip(random.gauss(0.75, 0.2), 0, 1)
+            )
+            alpha = (mask * t * 255).astype(np.uint8)
 
-        #     # 3) stack into an H×W×4 RGBA image
-        #     rgba = np.dstack([rgb, alpha])
+            # 3) stack into an H×W×4 RGBA image
+            if alpha.ndim == 2:
+                pass  # fine
+            elif alpha.ndim == 1:
+                alpha = alpha[:, np.newaxis]
+            else:
+                raise ValueError(f"Unexpected alpha shape: {alpha.shape}")
 
-        #     # 4) convert to PIL with alpha channel
-        #     pil_cut = Image.fromarray(rgba, mode="RGBA")
+            if alpha.shape != rgb.shape[:2]:
+                alpha = cv2.resize(alpha, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
 
-        #     cutout_layers.append((pil_cut, (x0, y0)))
+            # 5) Stack RGBA
+            rgba = np.dstack([rgb, alpha])
 
-        # # 3) load & distort FX
-        # fx_instances = load_fx_images(fx_folder)
+            # 4) convert to PIL with alpha channel
+            pil_cut = Image.fromarray(rgba, mode="RGBA")
 
-        # # 4) weave under & over
-        # pil_composed = weave_and_compose(
-        #     pil_map,
-        #     cutout_layers,
-        #     fx_instances,
-        #     fx_prob=0.4
-        # )
-        # # 5) back to OpenCV BGR
-        # map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
-        # pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB)).convert("RGBA")
+            cutout_layers.append((pil_cut, (x0, y0)))
+
+        # 3) load & distort FX
+        fx_instances = load_fx_images(fx_folder)
+
+        # 4) weave under & over
+        pil_composed = weave_and_compose(
+            pil_map,
+            cutout_layers,
+            fx_instances,
+            fx_prob=0.4
+        )
+        # 5) back to OpenCV BGR
+        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGRA)
+        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGRA2RGBA)).convert("RGBA")
         
-        # # Convert back to BGR OpenCV format
-        # map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGR)
+        # Convert back to BGR OpenCV format
+        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGRA)
 
         # Add health bars
         font = load_font(font_path, size = 10)
@@ -1238,11 +1238,9 @@ def generate_synthetic_ds(img_dir: str,
         
         boxes = boxes_c + boxes_m + boxes_map
         labels = labels_c + labels_m + labels_map
-        img_path = f'{output_dir}/{split}/map_{i:04d}.jpg'
-        print(img_path)
-        print(f"Champion boxes: {box_dict_champ}, Minion boxes: {box_dict_minion}, Map boxes: {map_box_dict}")
+
         # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        plot_image_with_boxes(map_img, boxes, labels, img_path)
+        plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
 
 def main():
     import argparse
