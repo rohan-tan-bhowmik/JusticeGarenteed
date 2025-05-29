@@ -12,6 +12,7 @@ import os
 import random
 import argparse
 import math
+from coco_util import create_coco_dict, add_to_coco
 
 from tqdm import tqdm
 
@@ -1051,6 +1052,8 @@ def generate_synthetic_ds(img_dir: str,
     :param champs_to_exclude: set of champion names to exclude from the dataset.
     :param images_per_unit: Number of images to generate per unit (champion or minion).
     """
+    rf_categories = data['categories']
+    coco_dict = create_coco_dict(rf_categories)
 
     # Load image paths
     img_dir = os.path.join(img_dir, split)
@@ -1242,7 +1245,8 @@ def generate_synthetic_ds(img_dir: str,
         box_dict_minion.pop('Ability', None)
         box_dict_minion.pop('Mask', None)
 
-        # map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
+        if random.random() > 0.5:
+            map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
@@ -1251,8 +1255,13 @@ def generate_synthetic_ds(img_dir: str,
         boxes = boxes_c + boxes_m + boxes_map
         labels = labels_c + labels_m + labels_map
 
-        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
+        img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
+        add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
+        cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
+
+    # Save coco json file
+    with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
+        json.dump(coco_dict, f, indent=4)
 
 def main():
     import argparse
