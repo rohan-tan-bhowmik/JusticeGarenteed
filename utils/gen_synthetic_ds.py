@@ -1129,12 +1129,20 @@ def generate_synthetic_ds(img_dir: str,
         for box, label in zip(map_boxes, map_labels):
             map_box_dict[itochamp[label]].append(box)
 
+        # Place champions & minions
+        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
+
+        # Ensure box_dicts are lists
+        champ_box_dicts = list(champ_box_dicts)
+        minion_box_dicts = list(minion_box_dicts)
+
         map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2BGRA)
         print(map_img.shape, champ_cutouts[0].shape)
         # plt.imshow(map_img)
         # plt.show()
 
-        # Place champions & minions
+
+
 
         map_img, box_dict_champ = place_cutouts_on_map(
             map_img, champ_cutouts, champ_box_dicts, map_boxes, num_champions
