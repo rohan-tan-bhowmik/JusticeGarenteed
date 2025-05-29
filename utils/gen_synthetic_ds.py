@@ -1092,6 +1092,8 @@ def overlay_random_fx(base_img: np.ndarray, fx_folder: str, num_samples: int = 5
 def generate_synthetic_ds(img_dir: str, 
     split: str, 
     fx_folder: str, 
+    hud_folder: str,
+    icons_folder: str,
     font_path: str,
     output_dir: str, 
     champs_to_exclude: set = None, 
@@ -1294,7 +1296,7 @@ def generate_synthetic_ds(img_dir: str,
         )
 
         if random.random() > 0.5:
-            map_img = overlay_random_fx(map_img, "../sample_hud", num_samples=1)
+            map_img = overlay_random_fx(map_img, hud_folder, num_samples=1)
 
         # Clean up & plot
         box_dict_champ.pop('Mask', None)
@@ -1360,7 +1362,7 @@ def generate_synthetic_ds(img_dir: str,
             map_img[-256:, -256:,  3] = 255
 
         if random.random() > 0.5:
-            folder = "league_icons/champions"
+            folder = os.path.join(icons_folder, "champions")
             imgs = [f for f in os.listdir(folder) if f.lower().endswith(('.png','.jpg','.jpeg'))]
 
             for j in range(4):
@@ -1387,6 +1389,10 @@ def main():
                         help="Split to generate (train or val).")
     parser.add_argument("--fx_folder", type=str, default="../fx",
                         help="Folder containing FX images.")
+    parser.add_argument("--hud_folder", type=str, default="../sample_hud",
+                        help="Folder containing HUG images.")
+    parser.add_argument("--icons_folder", type=str, default="league_icons",
+                    help="Folder containing league icons.")
     parser.add_argument("--font_path", type=str, default="../BeaufortForLoL-OTF/BeaufortforLOL-Bold.otf",
                         help="Path to the font file for health bars.")
     parser.add_argument("--output_dir", type=str, default="../synthetic_dataset/",
@@ -1416,6 +1422,8 @@ def main():
         img_dir=args.dataset_dir,
         split=args.split,
         fx_folder=args.fx_folder,
+        hud_folder=args.hud_folder,
+        icons_folder=args.icons_folder,
         font_path=args.font_path,
         output_dir=args.output_dir,
         champs_to_exclude=excluded_champs, 
