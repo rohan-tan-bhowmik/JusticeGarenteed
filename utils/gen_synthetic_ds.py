@@ -263,6 +263,90 @@ def chroma_crop_out_white(img, box):
     else:
         # No contours found, return the cropped image and box
         return cropped_img, box
+def expand_cutout(cutout: np.ndarray,
+                  champion_box: list[int],
+                  mask_box:    list[int],
+                  scale_factor: float = 4/3):
+    """
+    Resize the cutout by `scale_factor` (both width and height), and
+    scale champion_box & mask_box coordinates accordingly.
+
+    Args:
+      cutout:        H×W×C image.
+      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
+      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
+      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
+
+    Returns:
+      resized_cutout:   the cutout resized to (W*scale, H*scale).
+      champ_box_adj:    scaled champion_box in the new image.
+      mask_box_adj:     scaled mask_box in the new image.
+    """
+    H, W = cutout.shape[:2]
+
+    # 1) compute new dimensions
+    new_W = int(round(W * scale_factor))
+    new_H = int(round(H * scale_factor))
+
+    # 2) resize the image
+    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
+
+    # 3) scale the box coordinates
+    def scale_box(box):
+        x0, y0, x1, y1 = box
+        return [
+            int(round(x0 * scale_factor)),
+            int(round(y0 * scale_factor)),
+            int(round(x1 * scale_factor)),
+            int(round(y1 * scale_factor)),
+        ]
+
+    champ_box_adj = scale_box(champion_box)
+    mask_box_adj  = scale_box(mask_box)
+
+    return resized, champ_box_adj, mask_box_adj
+def expand_cutout(cutout: np.ndarray,
+                  champion_box: list[int],
+                  mask_box:    list[int],
+                  scale_factor: float = 4/3):
+    """
+    Resize the cutout by `scale_factor` (both width and height), and
+    scale champion_box & mask_box coordinates accordingly.
+
+    Args:
+      cutout:        H×W×C image.
+      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
+      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
+      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
+
+    Returns:
+      resized_cutout:   the cutout resized to (W*scale, H*scale).
+      champ_box_adj:    scaled champion_box in the new image.
+      mask_box_adj:     scaled mask_box in the new image.
+    """
+    H, W = cutout.shape[:2]
+
+    # 1) compute new dimensions
+    new_W = int(round(W * scale_factor))
+    new_H = int(round(H * scale_factor))
+
+    # 2) resize the image
+    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
+
+    # 3) scale the box coordinates
+    def scale_box(box):
+        x0, y0, x1, y1 = box
+        return [
+            int(round(x0 * scale_factor)),
+            int(round(y0 * scale_factor)),
+            int(round(x1 * scale_factor)),
+            int(round(y1 * scale_factor)),
+        ]
+
+    champ_box_adj = scale_box(champion_box)
+    mask_box_adj  = scale_box(mask_box)
+
+    return resized, champ_box_adj, mask_box_adj
 
 def generate_cutout(img_path, annotation_path):
     """
@@ -283,7 +367,7 @@ def generate_cutout(img_path, annotation_path):
     label = 0
 
     box_dict = {'Ability' : [], 'Pet': [], 'Mask': []}
-    print(img_path)
+
     for box, label in zip(boxes, labels):
         # Convert box to PASCAL VOC format [x_min, y_min, x_max, y_max]
         box = [box[0], box[1], box[0] + box[2], box[1] + box[3]]
@@ -328,6 +412,11 @@ def generate_cutout(img_path, annotation_path):
     x_max_champ = min(cutout.shape[1], int(x_max_champ - x_min))
     y_max_champ = min(cutout.shape[0], int(y_max_champ - y_min))
     champion_box = [x_min_champ, y_min_champ, x_max_champ, y_max_champ]
+    
+    # Provide a random chance to expand the cutout
+    if random.random() < 0.5:
+        cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor=4/3)
+
     # Add the mask box to the box_dict
     box_dict["Mask"].append(list(mask_box))
 
@@ -424,6 +513,49 @@ def box_intersects_map_boxes(box, map_boxes, x_tolerance = 50, y_tolerance = 100
             return True
 
     return False
+    
+def expand_cutout(cutout: np.ndarray,
+                  champion_box: list[int],
+                  mask_box:    list[int],
+                  scale_factor: float = 4/3):
+    """
+    Resize the cutout by `scale_factor` (both width and height), and
+    scale champion_box & mask_box coordinates accordingly.
+
+    Args:
+      cutout:        H×W×C image.
+      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
+      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
+      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
+
+    Returns:
+      resized_cutout:   the cutout resized to (W*scale, H*scale).
+      champ_box_adj:    scaled champion_box in the new image.
+      mask_box_adj:     scaled mask_box in the new image.
+    """
+    H, W = cutout.shape[:2]
+
+    # 1) compute new dimensions
+    new_W = int(round(W * scale_factor))
+    new_H = int(round(H * scale_factor))
+
+    # 2) resize the image
+    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
+
+    # 3) scale the box coordinates
+    def scale_box(box):
+        x0, y0, x1, y1 = box
+        return [
+            int(round(x0 * scale_factor)),
+            int(round(y0 * scale_factor)),
+            int(round(x1 * scale_factor)),
+            int(round(y1 * scale_factor)),
+        ]
+
+    champ_box_adj = scale_box(champion_box)
+    mask_box_adj  = scale_box(mask_box)
+
+    return resized, champ_box_adj, mask_box_adj
 
 def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     """
@@ -1258,6 +1390,10 @@ def generate_synthetic_ds(img_dir: str,
         img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
         add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
         cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
+        # plot_image_with_boxes(
+        #     map_img, boxes, labels, 
+        #     output_dir, split, count = i
+        # )
 
     # Save coco json file
     with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
