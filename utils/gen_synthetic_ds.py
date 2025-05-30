@@ -1503,16 +1503,16 @@ def generate_synthetic_ds(img_dir: str,
                 icon_uint8 = (icon * 255).astype(np.uint8)
                 map_img[-320:-256, -256+64*j - 1:-256+64*j+64 - 1, :] = icon_uint8
 
-
+        img_name = f'map_{i:04d}.jpg'
+        img_path = os.path.join(output_dir, split, img_name)
+        cv2.imwrite(img_path, map_img)
+        
+        add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
         # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
-        img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
-        # add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
-        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        plot_image_with_boxes(
-            map_img, boxes, labels, 
-            output_dir, split, count = i
-        )
+        # plot_image_with_boxes(
+        #     map_img, boxes, labels, 
+        #     output_dir, split, count = i
+        # )
 
     # Save coco json file
     with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
