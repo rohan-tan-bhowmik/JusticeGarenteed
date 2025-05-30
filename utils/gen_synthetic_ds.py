@@ -861,7 +861,7 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=Fal
     if font is not None:
         num_healthbar_indices = len(healthbar_paths)
         # Sample a gaussian distribution with mean 11, std 5
-        sample_index = np.random.normal(loc=11, scale=5, size= 1)
+        sample_index = np.random.normal(loc=11, scale=5, size= 1)[0]
         sample_index = int(np.clip(sample_index, 0, num_healthbar_indices - 1))
         healthbar_path = sorted(healthbar_paths)[sample_index]
 
@@ -1546,7 +1546,7 @@ def generate_synthetic_ds_parallel(img_dir: str,
     for result in results:
         if result is None:
             continue
-        
+
         add_to_coco(
             coco_dict, rf_categories, 
             result["boxes"], result["labels"],
