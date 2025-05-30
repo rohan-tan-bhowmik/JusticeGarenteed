@@ -19,7 +19,7 @@ def main():
                         help='Learning rate for the full model')
     parser.add_argument('--lr_encoder', type=float, default=1e-5,
                         help='Learning rate for the encoder backbone')
-    parser.add_argument('--resolution', type=int, default=(1792, 1008),
+    parser.add_argument('--resolution', type=int, default=1064,
                         help='Input image resolution, must be divisible by 56')
     parser.add_argument('--weight_decay', type=float, default=1e-4,
                         help='L2 regularization weight decay')
@@ -80,3 +80,6 @@ def main():
         early_stopping_min_delta=args.early_stopping_min_delta,
         early_stopping_use_ema=args.early_stopping_use_ema
     )
+
+if __name__ == "__main__":
+    main()
