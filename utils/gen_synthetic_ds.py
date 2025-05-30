@@ -1874,10 +1874,12 @@ def main():
     args = parser.parse_args()
     # Ensure output directory exists
     if not os.path.exists(args.output_dir):
+        print("Creating output directory:", args.output_dir)
         os.makedirs(args.output_dir)
-        if args.split:
-            if not os.path.exists(os.path.join(args.output_dir, args.split)):
-                os.makedirs(os.path.join(args.output_dir, args.split))
+        
+    if not os.path.exists(os.path.join(args.output_dir, args.split)):
+        print("Creating output directory for split:", args.split)
+        os.makedirs(os.path.join(args.output_dir, args.split))
 
     # Convert comma-separated string to set
     if args.champs_to_exclude:
