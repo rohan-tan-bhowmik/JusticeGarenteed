@@ -1876,7 +1876,8 @@ def main():
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
         if args.split:
-            os.makedirs(os.path.join(args.output_dir, args.split))
+            if not os.path.exists(os.path.join(args.output_dir, args.split)):
+                os.makedirs(os.path.join(args.output_dir, args.split))
 
     # Convert comma-separated string to set
     if args.champs_to_exclude:
