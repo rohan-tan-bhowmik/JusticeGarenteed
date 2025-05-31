@@ -1455,9 +1455,9 @@ def generate_single_image(
         img_path = os.path.join(output_dir, split, img_name)
         cv2.imwrite(img_path, map_img)
 
-        plot_image_with_boxes(
-            map_img, boxes, labels, output_dir=output_dir, split=split, count = i
-        )
+        # plot_image_with_boxes(
+        #     map_img, boxes, labels, output_dir=output_dir, split=split, count = i
+        # )
 
         return {
             "filename": img_name,
