@@ -20,6 +20,7 @@ from itertools import product
 from joblib import Parallel, delayed
 
 from gen_minimap import ImageDrawer
+import traceback
 
 # Cannon and siege minions have a lower chance of appearing
 CANNON_CHANCE = 0.15
@@ -100,7 +101,7 @@ def plot_image_with_boxes(img, boxes, labels, output_dir, split, count):
         plt.gca().add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='red', linewidth=1))
         plt.text(xmin, ymin -25, str(itochamp[label]), color='red', fontsize=7)
 
-    plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=500)
+    plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=400)
 
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
     """
@@ -262,13 +263,13 @@ def chroma_crop_out_white(img, box):
         x_max = x + x_min + w
         y_max = y + y_min + h
         box = [x_min, y_min, x_max, y_max]
-        plt.imshow(cropped_img)
-        plt.show()
+        
         return cropped_img, box
 
     else:
         # No contours found, return the cropped image and box
         return cropped_img, box
+
 def expand_cutout(cutout: np.ndarray,
                   champion_box: list[int],
                   mask_box:    list[int],
@@ -311,50 +312,23 @@ def expand_cutout(cutout: np.ndarray,
     mask_box_adj  = scale_box(mask_box)
 
     return resized, champ_box_adj, mask_box_adj
-def expand_cutout(cutout: np.ndarray,
-                  champion_box: list[int],
-                  mask_box:    list[int],
-                  scale_factor: float = 4/3):
+
+def reduce_transparency(cutout, min_alpha_factor = 0.3, max_alpha_factor=0.6):
     """
-    Resize the cutout by `scale_factor` (both width and height), and
-    scale champion_box & mask_box coordinates accordingly.
-
-    Args:
-      cutout:        H×W×C image.
-      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
-      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
-      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
-
-    Returns:
-      resized_cutout:   the cutout resized to (W*scale, H*scale).
-      champ_box_adj:    scaled champion_box in the new image.
-      mask_box_adj:     scaled mask_box in the new image.
+    Reduce the transparency of the cutout image by scaling the alpha channel.
+    
+    :param cutout: Cutout image with an alpha channel (HWC, BGRA).
+    :return: Cutout image with reduced transparency.
     """
-    H, W = cutout.shape[:2]
+    if cutout.shape[2] != 4:
+        raise ValueError("Cutout must have an alpha channel (BGRA format).")
 
-    # 1) compute new dimensions
-    new_W = int(round(W * scale_factor))
-    new_H = int(round(H * scale_factor))
+    alpha_factor = random.uniform(min_alpha_factor, max_alpha_factor)
+    cutout[..., 3] = (cutout[..., 3] * alpha_factor).astype(np.uint8)
+    
+    return cutout
 
-    # 2) resize the image
-    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
-
-    # 3) scale the box coordinates
-    def scale_box(box):
-        x0, y0, x1, y1 = box
-        return [
-            int(round(x0 * scale_factor)),
-            int(round(y0 * scale_factor)),
-            int(round(x1 * scale_factor)),
-            int(round(y1 * scale_factor)),
-        ]
-
-    champ_box_adj = scale_box(champion_box)
-    mask_box_adj  = scale_box(mask_box)
-
-    return resized, champ_box_adj, mask_box_adj
-
-def generate_cutout(img_path, annotation_path, minion=False):
+def generate_cutout(img_path, annotation_path, minion=False, make_transparent_prob = 0.1):
     """
     Generate a cutout image from the original image and its corresponding XML file.
     Returns cutout and a dictionary with bounding boxes for champion, pet, and ability in PASCAL VOC format.
@@ -421,8 +395,17 @@ def generate_cutout(img_path, annotation_path, minion=False):
     champion_box = [x_min_champ, y_min_champ, x_max_champ, y_max_champ]
     
     # Provide a random chance to expand the cutout
-    if not minion and random.random() < 0.5:  # skip if it's a red or blue minion 
-        cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor=4/3)
+    if random.random() < 0.5:
+        if not minion:  # skip if it's a red or blue minion 
+            scale_factor = random.choices(
+                population=[6/5, 4/3, 3/2],
+                weights=[0.65, 0.30, 0.5],  # your custom probabilities
+                k=1  # number of items to choose
+            )[0]
+
+            cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor=scale_factor)
+        else:
+            cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor = 6/5)
 
     # Add the mask box to the box_dict
     box_dict["Mask"].append(list(mask_box))
@@ -441,6 +424,11 @@ def generate_cutout(img_path, annotation_path, minion=False):
             
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
+
+    # Occasionally make cutout transparent to simulate hiding in bushes
+    if random.random() < make_transparent_prob:
+        cutout = reduce_transparency(cutout)
+
     return cutout, box_dict 
   
 def count_non_white_pixels(img):
@@ -563,6 +551,7 @@ def expand_cutout(cutout: np.ndarray,
     mask_box_adj  = scale_box(mask_box)
 
     return resized, champ_box_adj, mask_box_adj
+
 
 def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     """
@@ -733,6 +722,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, mi
         for cutout, box_dict in zip(cutouts, box_dicts):
             attempts = 0
             cutout_h, cutout_w = cutout.shape[:2]
+            print(cutout_h, cutout_w)
             max_x = map_img.shape[1] - cutout_w
             max_y = map_img.shape[0] - cutout_h
 
@@ -1465,6 +1455,10 @@ def generate_single_image(
         img_path = os.path.join(output_dir, split, img_name)
         cv2.imwrite(img_path, map_img)
 
+        plot_image_with_boxes(
+            map_img, boxes, labels, output_dir=output_dir, split=split, count = i
+        )
+
         return {
             "filename": img_name,
             "width": map_img.shape[1],
@@ -1472,8 +1466,10 @@ def generate_single_image(
             "boxes": boxes,
             "labels": labels
         }
+    
     except Exception as e:
         print(f"[Warning] iteration {i} failed: {e!r}")
+        traceback.print_exc()
         return None
         
 
@@ -1557,300 +1553,6 @@ def generate_synthetic_ds_parallel(img_dir: str,
     with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
         json.dump(coco_dict, f, indent=4)
 
-def generate_synthetic_ds(img_dir: str, 
-    split: str, 
-    fx_folder: str, 
-    hud_folder: str,
-    icons_folder: str,
-    font_path: str,
-    output_dir: str, 
-    champs_to_exclude: set = None, 
-    images_per_unit: int = 500):
-    """
-    :param dataset_dir: Directory containing the dataset.
-    :param split: split to generate 'train' and 'val'
-    :param fx_folder: Directory containing the FX images.
-    :param font_path: Path to the font file for health bars.
-    :param output_dir: Directory to save the generated images.
-    :param champs_to_exclude: set of champion names to exclude from the dataset.
-    :param images_per_unit: Number of images to generate per unit (champion or minion).
-    """
-    rf_categories = data['categories']
-    coco_dict = create_coco_dict(rf_categories)
-
-    # Load image paths
-    img_dir = os.path.join(img_dir, split)
-    all_files = os.listdir(img_dir)
-    all_imgs = [img for img in all_files if img.endswith('.jpg')]
-    map_imgs = [os.path.join(img_dir, img) for img in all_imgs if img.startswith('map_frame_')]
-    # Separate by role
-    champ_imgs = []
-    champ_names = set()
-    for img in all_imgs:
-        if not img.startswith(('red-','blue-', 'map_frame_')):
-            if '-' in img:
-                champ_name = img[:img.find('-')]
-            else:
-                champ_name = img[:img.find('_')]
-            if champ_name in WEIRD_NAMES:
-                champ_name = WEIRD_NAMES[champ_name]
-            if champ_name not in champs_to_exclude:                
-                champ_imgs.append(os.path.join(img_dir, img))
-                champ_names.add(champ_name)
-
-    minion_imgs = [os.path.join(img_dir, img)
-                for img in all_imgs if img.startswith(('red-','blue-'))]
-    minion_imgs_dict = {}
-    for img in minion_imgs:
-        if 'caster' in img:
-            minion_imgs_dict.setdefault('caster', []).append(img)
-        elif 'melee' in img:
-            minion_imgs_dict.setdefault('melee', []).append(img)
-        elif 'cannon' in img:
-            minion_imgs_dict.setdefault('cannon', []).append(img)
-        elif 'siege' in img:
-            minion_imgs_dict.setdefault('siege', []).append(img)
-
-    for i in tqdm(range(images_per_unit * (NUM_CHAMPS + NUM_MINIONS - len(champs_to_exclude))), desc=f"Generating {split} dataset"):
-        # Champions have mean 1 std 3 clamp to 1 to 10
-        num_champions = int(np.clip(random.gauss(1, 3), 1, 10))
-        # num_champions = 1
-        # Minions have mean 6 std 7 clamp to 0 to 20
-        num_minions = int(np.clip(random.gauss(8, 5), 0, 20))
-
-        champs_chosen = 0
-        attempts = 0
-        test_imgs = []
-        champion_names = set()
-
-        # Ensure we don't choose more champions than available
-        num_champions = min(num_champions, len(champ_names))
-
-        while champs_chosen < num_champions:
-            test_img = random.choice(champ_imgs)
-            base_img_name = os.path.basename(test_img).split('/')[-1]
-            champ_name = base_img_name[:base_img_name.find('_')]
-            if champ_name not in champion_names:
-                test_imgs.append(test_img)
-                champion_names.add(champ_name)
-                champs_chosen += 1
-            attempts += 1
-
-        minion_imgs = []
-        for _ in range(num_minions):
-            rand = random.random()
-            if rand <= SIEGE_CHANCE:
-                minion_type = 'siege'
-            elif rand <= SIEGE_CHANCE + CANNON_CHANCE:
-                minion_type = 'cannon'
-            else:
-                minion_type = random.choice(['melee', 'caster'])
-            minion_imgs.append(random.choice(minion_imgs_dict[minion_type]))
-        # Load map
-        map_box_dict = {'RedNexus': [], 'BlueNexus': [], 'BlueTower': [], 'RedTower': [],
-                        'BlueInhibitor': [], 'RedInhibitor': []}
-        map_img_path = random.choice(map_imgs)
-        map_img = cv2.imread(map_img_path)
-
-        # Populate map_box_dict with the map image's bounding boxes (if there are any)
-        map_img_name = os.path.basename(map_img_path)
-        map_boxes, map_labels = parse_coco_json(map_img_name, annotation_path)
-        map_boxes = convert_coco_to_pascal_voc(map_boxes)
-
-        for box, label in zip(map_boxes, map_labels):
-            if itochamp[label] != 'Pit': # Ignore Pit box
-                map_box_dict[itochamp[label]].append(box)
-
-        # Place champions & minions
-        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
-
-        # Ensure box_dicts are lists
-        champ_box_dicts = list(champ_box_dicts)
-        minion_box_dicts = list(minion_box_dicts)
-
-        map_img = cv2.cvtColor(map_img, cv2.COLOR_BGR2BGRA)
-        # plt.imshow(map_img)
-        # plt.show()
-
-        map_img, box_dict_champ = place_cutouts_on_map(
-            map_img, champ_cutouts, champ_box_dicts, map_boxes, num_champions
-        )
-
-        map_img, box_dict_minion = place_cutouts_on_map(
-            map_img, minion_cutouts, minion_box_dicts,
-            map_boxes, num_minions, minions=True
-        )
-
-        # ─── weave in FX ──────────────────────────────────────────────────────────
-        # 1) convert to PIL RGBA
-        # pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGR2RGB))\
-        #             .convert("RGBA")
-        rgba = cv2.cvtColor(map_img, cv2.COLOR_BGRA2RGBA)
-        pil_map = Image.fromarray(rgba, mode="RGBA")
-
-        # 2) build cutout layers [(PIL_cutout, (x,y)), …]
-        cutout_layers = []
-        for cut_bgr, bd in zip(champ_cutouts, champ_box_dicts):
-            x0, y0 = bd['Mask'][0][:2]
-
-            # 1) convert BGR→RGB
-            rgb = cv2.cvtColor(cut_bgr, cv2.COLOR_BGR2RGB)
-
-            # 2) build a binary mask (1 where there's real pixels, 0 where white)
-            white = np.array([255, 255, 255], dtype=cut_bgr.dtype)
-            mask = np.any(cut_bgr[:, :, :3] != white, axis=-1).astype(np.uint8)
-
-            # → inject random translucency: 75% of the time pick a low-alpha, else high-alpha
-            t = (
-                np.clip(random.gauss(0.25, 0.2), 0, 1)
-                if random.random() > 0.2
-                else np.clip(random.gauss(0.75, 0.2), 0, 1)
-            )
-            alpha = (mask * t * 255).astype(np.uint8)
-
-            # 3) stack into an H×W×4 RGBA image
-            if alpha.ndim == 2:
-                pass  # fine
-            elif alpha.ndim == 1:
-                alpha = alpha[:, np.newaxis]
-            else:
-                raise ValueError(f"Unexpected alpha shape: {alpha.shape}")
-
-            if alpha.shape != rgb.shape[:2]:
-                alpha = cv2.resize(alpha, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
-
-            # 5) Stack RGBA
-            rgba = np.dstack([rgb, alpha])
-
-            # 4) convert to PIL with alpha channel
-            pil_cut = Image.fromarray(rgba, mode="RGBA")
-
-            cutout_layers.append((pil_cut, (x0, y0)))
-
-        # 3) load & distort FX
-        fx_instances = load_fx_images(fx_folder)
-
-        # 4) weave under & over
-        pil_composed = weave_and_compose(
-            pil_map,
-            cutout_layers,
-            fx_instances,
-            fx_prob=0.4
-        )
-        # 5) back to OpenCV BGR
-        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGRA)
-        pil_map = Image.fromarray(cv2.cvtColor(map_img, cv2.COLOR_BGRA2RGBA)).convert("RGBA")
-        
-        # Convert back to BGR OpenCV format
-        map_img = cv2.cvtColor(np.array(pil_composed), cv2.COLOR_RGBA2BGRA)
-
-        # Add health bars
-        font = load_font(font_path, size = 10)
-        map_img = add_healthbars(
-            map_img,
-            box_dict_champ,
-            color=random.choice([True, False]),
-            font = font,
-            mode="champs"
-        )
-
-        map_img = add_healthbars(
-            map_img,
-            box_dict_minion,
-            mode="minions",
-            color=random.choice([True, False]),
-            font=font,
-            image_paths=minion_imgs
-        )
-
-        if random.random() > 0.5:
-            map_img = overlay_random_fx(map_img, hud_folder, num_samples=1)
-
-        # Clean up & plot
-        box_dict_champ.pop('Mask', None)
-        box_dict_minion.pop('Ability', None)
-        box_dict_minion.pop('Mask', None)
-
-        if random.random() > 0.5:
-            map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
-
-        boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
-        boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
-        boxes_map, labels_map = get_boxes_from_box_dict(map_box_dict)
-        
-        boxes = boxes_c + boxes_m + boxes_map
-        labels = labels_c + labels_m + labels_map
-
-        blacklist = [
-            ((952, 1080), (456, 1268)),   # (y0, y1), (x0, x1)
-            ((760, 1080), (1664, 1920)),
-            # add more if you like...
-        ]
-
-        filtered_boxes  = []
-        filtered_labels = []
-
-        for box, label in zip(boxes, labels):
-            xmin, ymin, xmax, ymax = box
-            box_area = (xmax - xmin) * (ymax - ymin)
-
-            # assume no intersection until proven otherwise
-            intersects = False
-
-            for (by0, by1), (bx0, bx1) in blacklist:
-                # compute intersection coordinates
-                inter_x0 = max(xmin, bx0)
-                inter_x1 = min(xmax, bx1)
-                inter_y0 = max(ymin, by0)
-                inter_y1 = min(ymax, by1)
-
-                # check that they actually overlap
-                if inter_x1 > inter_x0 and inter_y1 > inter_y0:
-                    inter_area = (inter_x1 - inter_x0) * (inter_y1 - inter_y0)
-                    # if more than 50% of the box is covered → drop
-                    if inter_area > 0.2 * box_area:
-                        intersects = True
-                        break
-
-            if not intersects:
-                filtered_boxes.append(box)
-                filtered_labels.append(label)
-
-        boxes, labels = filtered_boxes, filtered_labels
-
-        # minimap = generate_random_minimap()
-        # plt.imshow(minimap)
-        # plt.show()
-        if random.random() > 0.5:
-            minimap = cv2.cvtColor(minimap_drawer.get_minimap_np(), cv2.COLOR_BGR2RGB)
-            minimap_uint8 = (minimap * 255).astype(np.uint8)
-            map_img[-256:, -256:, :3] = minimap_uint8
-            map_img[-256:, -256:,  3] = 255
-
-        if random.random() > 0.5:
-            folder = os.path.join(icons_folder, "champions")
-            imgs = [f for f in os.listdir(folder) if f.lower().endswith(('.png','.jpg','.jpeg'))]
-
-            for j in range(4):
-                icon = cv2.cvtColor(cv2.resize(plt.imread(os.path.join(folder, random.choice(imgs))), dsize=(64,64)), cv2.COLOR_BGRA2RGBA)
-                icon_uint8 = (icon * 255).astype(np.uint8)
-                map_img[-320:-256, -256+64*j - 1:-256+64*j+64 - 1, :] = icon_uint8
-
-        img_name = f'map_{i:04d}.jpg'
-        img_path = os.path.join(output_dir, split, img_name)
-        cv2.imwrite(img_path, map_img)
-        
-        add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
-        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        # plot_image_with_boxes(
-        #     map_img, boxes, labels, 
-        #     output_dir, split, count = i
-        # )
-
-    # Save coco json file
-    with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
-        json.dump(coco_dict, f, indent=4)
-
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Generate synthetic dataset for League of Legends.")
@@ -1876,7 +1578,7 @@ def main():
     if not os.path.exists(args.output_dir):
         print("Creating output directory:", args.output_dir)
         os.makedirs(args.output_dir)
-        
+
     if not os.path.exists(os.path.join(args.output_dir, args.split)):
         print("Creating output directory for split:", args.split)
         os.makedirs(os.path.join(args.output_dir, args.split))

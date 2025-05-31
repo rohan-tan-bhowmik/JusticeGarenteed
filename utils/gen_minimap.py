@@ -12,8 +12,8 @@ import matplotlib.pyplot as plt
 
 
 class ImageDrawer:
-    def __init__(self, champion_circle_icon_path="league_icons/champions", minimap_path="league_icons/minimap",
-                 fog_path="league_icons/fog", misc_path="league_icons/misc", resize=None):
+    def __init__(self, champion_circle_icon_path="../league_icons/champions", minimap_path="../league_icons/minimap",
+                 fog_path="../league_icons/fog", misc_path="../league_icons/misc", resize=None):
         self.champion_circle_icon_path = champion_circle_icon_path
         self.minimap_path = minimap_path
         self.fog_path = fog_path
