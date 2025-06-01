@@ -341,13 +341,12 @@ def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
 
     return cutout
 
-def hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val_shift_limit=0.15):
+def hv_jitter(cutout, hue_shift_limit=40, val_shift_limit=0.15):
     """
-    Apply HSV jitter to non-white pixels in the champion region of a BGRA cutout image.
+    Apply HV jitter to non-white pixels in the champion region of a BGRA cutout image.
 
     Parameters:
         cutout (np.ndarray): Input image in BGRA format.
-        champion_box (list): Bounding box of the champion in PASCAL VOC format [x_min, y_min, x_max, y_max].
         hue_shift_limit (int): Max hue shift in degrees (-h, h).
         sat_shift_limit (float): Max saturation shift percentage (-s, s).
         val_shift_limit (float): Max brightness shift percentage (-v, v).
@@ -356,12 +355,12 @@ def hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val
         np.ndarray: Augmented image in BGRA format.
     """
 
-    x_min, y_min, x_max, y_max = champion_box
-    champion_region = cutout[y_min:y_max, x_min:x_max].copy()
+    # x_min, y_min, x_max, y_max = champion_box
+    # champion_region = cutout[y_min:y_max, x_min:x_max].copy()
 
     # Separate BGR and alpha
-    bgr = champion_region[:, :, :3]
-    alpha = champion_region[:, :, 3]
+    bgr = cutout[:, :, :3]
+    alpha = cutout[:, :, 3]
 
     # Mask for non-white pixels (white = [255,255,255])
     non_white_mask = np.any(bgr < 250, axis=-1)  # more robust than strict == 255
@@ -369,14 +368,12 @@ def hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val
     # Convert to HSV
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
 
-    # Jitter values
-    hue_shift = np.random.uniform(-hue_shift_limit, hue_shift_limit)
-    sat_shift = np.random.uniform(-sat_shift_limit, sat_shift_limit)
-    val_shift = np.random.uniform(-val_shift_limit, val_shift_limit)
+    # Jitter values with a Gaussian
+    hue_shift = np.random.normal(0, scale = hue_shift_limit)
+    val_shift = np.random.normal(0, scale = val_shift_limit)
 
     # Apply jitter only where non-white
     hsv[..., 0][non_white_mask] = (hsv[..., 0][non_white_mask] + hue_shift) % 180
-    hsv[..., 1][non_white_mask] = np.clip(hsv[..., 1][non_white_mask] * (1 + sat_shift), 0, 255)
     hsv[..., 2][non_white_mask] = np.clip(hsv[..., 2][non_white_mask] * (1 + val_shift), 0, 255)
 
     # Back to BGR
@@ -386,11 +383,11 @@ def hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val
     champion_jittered = np.dstack((bgr_jittered, alpha))
 
     # Replace region in cutout
-    cutout[y_min:y_max, x_min:x_max] = champion_jittered
+    # cutout[y_min:y_max, x_min:x_max] = champion_jittered
 
-    return cutout
+    return champion_jittered
  
-def generate_cutout(img_path, annotation_path, minion=False, make_transparent_prob = 0.1):
+def generate_cutout(img_path, annotation_path, minion=False, make_transparent_prob = 0.05):
     """
     Generate a cutout image from the original image and its corresponding XML file.
     Returns cutout and a dictionary with bounding boxes for champion, pet, and ability in PASCAL VOC format.
@@ -488,9 +485,12 @@ def generate_cutout(img_path, annotation_path, minion=False, make_transparent_pr
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
 
-    if random.random() < 0.5 and not minion:  # skip if it's a red or blue minion
-        # Apply HSV jitter to the cutout
-        cutout = hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val_shift_limit=0.15)
+    if random.random() < 0.5:
+        if not minion:  # skip if it's a red or blue minion
+            # Apply HSV jitter to the cutout
+            cutout = hv_jitter(cutout, hue_shift_limit=25, val_shift_limit=0.15)
+        else:
+            cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
 
     # Occasionally make cutout transparent to simulate hiding in bushes
     if random.random() < make_transparent_prob:
