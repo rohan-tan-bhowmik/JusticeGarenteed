@@ -280,6 +280,7 @@ def chroma_crop_out_white(img, box):
 def expand_cutout(cutout: np.ndarray,
                   champion_box: list[int],
                   mask_box:    list[int],
+                  pet_boxes: list[list[int]] = [],
                   scale_factor: float = 4/3):
     """
     Resize the cutout by `scale_factor` (both width and height), and
@@ -318,7 +319,12 @@ def expand_cutout(cutout: np.ndarray,
     champ_box_adj = scale_box(champion_box)
     mask_box_adj  = scale_box(mask_box)
 
-    return resized, champ_box_adj, mask_box_adj
+    if not pet_boxes:
+        pet_boxes_adj = []
+
+    pet_boxes_adj = [scale_box(box) for box in pet_boxes]
+
+    return resized, champ_box_adj, mask_box_adj, pet_boxes_adj
 
 def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
     """
@@ -335,6 +341,55 @@ def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
 
     return cutout
 
+def hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val_shift_limit=0.15):
+    """
+    Apply HSV jitter to non-white pixels in the champion region of a BGRA cutout image.
+
+    Parameters:
+        cutout (np.ndarray): Input image in BGRA format.
+        champion_box (list): Bounding box of the champion in PASCAL VOC format [x_min, y_min, x_max, y_max].
+        hue_shift_limit (int): Max hue shift in degrees (-h, h).
+        sat_shift_limit (float): Max saturation shift percentage (-s, s).
+        val_shift_limit (float): Max brightness shift percentage (-v, v).
+
+    Returns:
+        np.ndarray: Augmented image in BGRA format.
+    """
+
+    x_min, y_min, x_max, y_max = champion_box
+    champion_region = cutout[y_min:y_max, x_min:x_max].copy()
+
+    # Separate BGR and alpha
+    bgr = champion_region[:, :, :3]
+    alpha = champion_region[:, :, 3]
+
+    # Mask for non-white pixels (white = [255,255,255])
+    non_white_mask = np.any(bgr < 250, axis=-1)  # more robust than strict == 255
+
+    # Convert to HSV
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
+
+    # Jitter values
+    hue_shift = np.random.uniform(-hue_shift_limit, hue_shift_limit)
+    sat_shift = np.random.uniform(-sat_shift_limit, sat_shift_limit)
+    val_shift = np.random.uniform(-val_shift_limit, val_shift_limit)
+
+    # Apply jitter only where non-white
+    hsv[..., 0][non_white_mask] = (hsv[..., 0][non_white_mask] + hue_shift) % 180
+    hsv[..., 1][non_white_mask] = np.clip(hsv[..., 1][non_white_mask] * (1 + sat_shift), 0, 255)
+    hsv[..., 2][non_white_mask] = np.clip(hsv[..., 2][non_white_mask] * (1 + val_shift), 0, 255)
+
+    # Back to BGR
+    bgr_jittered = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    # Reattach alpha
+    champion_jittered = np.dstack((bgr_jittered, alpha))
+
+    # Replace region in cutout
+    cutout[y_min:y_max, x_min:x_max] = champion_jittered
+
+    return cutout
+ 
 def generate_cutout(img_path, annotation_path, minion=False, make_transparent_prob = 0.1):
     """
     Generate a cutout image from the original image and its corresponding XML file.
@@ -410,9 +465,10 @@ def generate_cutout(img_path, annotation_path, minion=False, make_transparent_pr
                 k=1  # number of items to choose
             )[0]
 
-            cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor=scale_factor)
+            cutout, champion_box, mask_box, pet_boxes = expand_cutout(cutout, champion_box, mask_box, pet_boxes = pet_boxes, scale_factor=scale_factor)
+
         else:
-            cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor = 6/5)
+            cutout, champion_box, mask_box, pet_boxes = expand_cutout(cutout, champion_box, mask_box, scale_factor = 6/5)
 
     # Add the mask box to the box_dict
     box_dict["Mask"].append(list(mask_box))
@@ -431,6 +487,10 @@ def generate_cutout(img_path, annotation_path, minion=False, make_transparent_pr
             
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
+
+    if random.random() < 0.5 and not minion:  # skip if it's a red or blue minion
+        # Apply HSV jitter to the cutout
+        cutout = hsv_jitter(cutout, champion_box, hue_shift_limit=8, sat_shift_limit=0.2, val_shift_limit=0.15)
 
     # Occasionally make cutout transparent to simulate hiding in bushes
     if random.random() < make_transparent_prob:
@@ -515,50 +575,6 @@ def box_intersects_map_boxes(box, map_boxes, x_tolerance = 50, y_tolerance = 100
             return True
 
     return False
-    
-def expand_cutout(cutout: np.ndarray,
-                  champion_box: list[int],
-                  mask_box:    list[int],
-                  scale_factor: float = 4/3):
-    """
-    Resize the cutout by `scale_factor` (both width and height), and
-    scale champion_box & mask_box coordinates accordingly.
-
-    Args:
-      cutout:        H×W×C image.
-      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
-      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
-      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
-
-    Returns:
-      resized_cutout:   the cutout resized to (W*scale, H*scale).
-      champ_box_adj:    scaled champion_box in the new image.
-      mask_box_adj:     scaled mask_box in the new image.
-    """
-    H, W = cutout.shape[:2]
-
-    # 1) compute new dimensions
-    new_W = int(round(W * scale_factor))
-    new_H = int(round(H * scale_factor))
-
-    # 2) resize the image
-    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
-
-    # 3) scale the box coordinates
-    def scale_box(box):
-        x0, y0, x1, y1 = box
-        return [
-            int(round(x0 * scale_factor)),
-            int(round(y0 * scale_factor)),
-            int(round(x1 * scale_factor)),
-            int(round(y1 * scale_factor)),
-        ]
-
-    champ_box_adj = scale_box(champion_box)
-    mask_box_adj  = scale_box(mask_box)
-
-    return resized, champ_box_adj, mask_box_adj
-
 
 def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     """
