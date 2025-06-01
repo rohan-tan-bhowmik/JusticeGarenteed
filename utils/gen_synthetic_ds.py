@@ -394,7 +394,7 @@ def hv_jitter(cutout, hue_shift_limit=40, val_shift_limit=0.15):
 
     return champion_jittered
  
-def generate_cutout(img_path, annotation_path, minion=False, make_transparent_prob = 0.05):
+def generate_cutout(img_path, annotation_path, split, minion=False, make_transparent_prob = 0.05):
     """
     Generate a cutout image from the original image and its corresponding XML file.
     Returns cutout and a dictionary with bounding boxes for champion, pet, and ability in PASCAL VOC format.
@@ -492,7 +492,7 @@ def generate_cutout(img_path, annotation_path, minion=False, make_transparent_pr
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
 
-    if random.random() < 0.5:
+    if random.random() < 0.5 and split == 'train':
         if not minion:  # skip if it's a red or blue minion
             # Apply HSV jitter to the cutout
             cutout = hv_jitter(cutout, hue_shift_limit=25, val_shift_limit=0.15)
@@ -521,7 +521,7 @@ def count_non_white_pixels(img):
     # Count non-white pixels
     return np.sum(non_white_mask)
 
-def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_boxes = None):
+def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, split):
     """
     Generate cutouts for multiple images and their corresponding bounding boxes.
     
@@ -535,12 +535,12 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_
     minion_box_dicts = []
     
     for img_path in champion_img_paths:
-        cutout, box_dict = generate_cutout(img_path, annotation_path)
+        cutout, box_dict = generate_cutout(img_path, annotation_path, split)
         cutouts.append(cutout)
         box_dicts.append(box_dict)
     
     for img_path in minion_img_paths:
-        cutout, box_dict = generate_cutout(img_path, annotation_path, minion=True)
+        cutout, box_dict = generate_cutout(img_path, annotation_path, split, minion=True)
         minion_cutouts.append(cutout)
         minion_box_dicts.append(box_dict)
 
@@ -1324,7 +1324,7 @@ def generate_single_image(
                 map_box_dict[itochamp[label]].append(box)
 
         # Place champions & minions
-        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
+        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, split)
 
         # Ensure box_dicts are lists
         champ_box_dicts = list(champ_box_dicts)
@@ -1519,7 +1519,6 @@ def generate_single_image(
     
     except Exception as e:
         print(f"[Warning] iteration {i} failed: {e!r}")
-        traceback.print_exc()
         return None
 
 def generate_synthetic_ds_parallel(img_dir: str, 
