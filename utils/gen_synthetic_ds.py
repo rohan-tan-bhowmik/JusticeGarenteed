@@ -137,8 +137,8 @@ def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5
   
 def chroma_key_with_glow_preservation(
     img_bgr: np.ndarray,
-    hsv_lower: int = 45,
-    hsv_upper: int = 75,
+    hsv_lower: int = 50,
+    hsv_upper: int = 70,
     aggressive: bool = False,
     champ_boxes=None,
     pet_boxes=None,
@@ -171,23 +171,30 @@ def chroma_key_with_glow_preservation(
     strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 170) & (v >= 170) & pet
 
     out = img_bgr.copy()
-    out[strong_mask] = (255, 255, 255)
-
     out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
-    whiteness = (v / 255.0 + (255.0 - s) / 255.0) * 0.05 
+
+    out[strong_mask] = (255, 255, 255, 0)
+
+    b, g, r = cv2.split(img_bgr.astype(np.float32))
+    max_rgb = np.maximum(np.maximum(r, g), b)
+    min_rgb = np.minimum(np.minimum(r, g), b)
+    grayness = 1.0 - (max_rgb - min_rgb) / 255.0
+    # Now normalize brightness
+    brightness = v / 255.0
+    # Whiteness should be large only when both grayness≈1 and brightness≈1
+    whiteness = grayness * brightness**2 * 5
 
     # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
     hue_center = (hsv_lower + hsv_upper) / 2
-    hue_range = (hsv_upper - hsv_lower) / 2
-    distance_from_lime = (np.abs(h - hue_center) / hue_range)
+    hue_range = ((hsv_upper - hsv_lower) / 2) * 2
+    distance_from_lime = ((np.abs(h - hue_center)) / hue_range)
 
     non_white = np.any(img_bgr != [255, 255, 255], axis=-1)
-    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/max(hue_center, (180-1) - hue_center) / hue_range), 0, 1)
+    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/hue_center / hue_range), 0, 1)
 
     # compute per-pixel darkening factor in [0..1]
-    scale = np.clip(distance_from_lime * (255 - v * 0.5) * (1 - avg_proximity), 0, 255) / 255.0
-    scale *= (1.0 - whiteness)
-
+    scale = np.clip(distance_from_lime * (255 - v * 0.25) * (1 - avg_proximity) * (1.0 + whiteness**2), 0, 255) / 255.0
+    # scale *= (1.0 + whiteness)
 
     # mask of “foreground” (any pixel that isn’t pure white)
     fg = np.any(out[..., :3] != 255, axis=-1)
@@ -199,7 +206,7 @@ def chroma_key_with_glow_preservation(
         out[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
 
     # leave the alpha as you originally intended
-    out[..., 3] = np.clip(distance_from_lime * (255 - v) * (1 - avg_proximity), 0, 255).astype(np.uint8)
+    out[..., 3] = np.clip((distance_from_lime + (255 - v*1) / 255)**2 * (255 - v * 0.4) * (1 - avg_proximity), 0, 255).astype(np.uint8)
 
     return out
   
@@ -313,7 +320,7 @@ def expand_cutout(cutout: np.ndarray,
 
     return resized, champ_box_adj, mask_box_adj
 
-def reduce_transparency(cutout, min_alpha_factor = 0.3, max_alpha_factor=0.6):
+def reduce_transparency(cutout, min_alpha_factor = 0.3, max_alpha_factor=0.5):
     """
     Reduce the transparency of the cutout image by scaling the alpha channel.
     
@@ -325,7 +332,7 @@ def reduce_transparency(cutout, min_alpha_factor = 0.3, max_alpha_factor=0.6):
 
     alpha_factor = random.uniform(min_alpha_factor, max_alpha_factor)
     cutout[..., 3] = (cutout[..., 3] * alpha_factor).astype(np.uint8)
-    
+
     return cutout
 
 def generate_cutout(img_path, annotation_path, minion=False, make_transparent_prob = 0.1):
@@ -399,7 +406,7 @@ def generate_cutout(img_path, annotation_path, minion=False, make_transparent_pr
         if not minion:  # skip if it's a red or blue minion 
             scale_factor = random.choices(
                 population=[6/5, 4/3, 3/2],
-                weights=[0.65, 0.30, 0.5],  # your custom probabilities
+                weights=[0.70, 0.25, 0.05],  # your custom probabilities
                 k=1  # number of items to choose
             )[0]
 
@@ -696,6 +703,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, mi
                     if np.hypot(x_cand - x_o, y_cand - y_o) < (radius + r_o) * MIN_SEP:
                         collision = True
                         break
+
                 if collision:
                     attempts += 1
                     continue
@@ -722,7 +730,6 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, mi
         for cutout, box_dict in zip(cutouts, box_dicts):
             attempts = 0
             cutout_h, cutout_w = cutout.shape[:2]
-            print(cutout_h, cutout_w)
             max_x = map_img.shape[1] - cutout_w
             max_y = map_img.shape[0] - cutout_h
 
@@ -1469,7 +1476,6 @@ def generate_single_image(
     
     except Exception as e:
         print(f"[Warning] iteration {i} failed: {e!r}")
-        traceback.print_exc()
         return None
         
 
