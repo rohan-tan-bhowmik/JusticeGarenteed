@@ -320,7 +320,7 @@ def expand_cutout(cutout: np.ndarray,
 
     return resized, champ_box_adj, mask_box_adj
 
-def reduce_transparency(cutout, min_alpha_factor = 0.3, max_alpha_factor=0.5):
+def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
     """
     Reduce the transparency of the cutout image by scaling the alpha channel.
     
