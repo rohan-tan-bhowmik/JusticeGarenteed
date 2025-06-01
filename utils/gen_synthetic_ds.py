@@ -9,6 +9,7 @@ from gen_healthbar import process_healthbar_template, load_font
 import xml.etree.ElementTree as ET
 
 import os
+import sys
 import random
 import argparse
 import math
@@ -22,14 +23,17 @@ from joblib import Parallel, delayed
 from gen_minimap import ImageDrawer
 import traceback
 
+base_dir = os.path.dirname(__file__) 
+parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
+sys.path.insert(0, parent_dir)
+
+from classes import CLASSES, HEALTHBAR_CLASSES
 
 # Cannon and siege minions have a lower chance of appearing
 CANNON_CHANCE = 0.15
 SIEGE_CHANCE = 0.05
 NUM_CHAMPS = 170
 NUM_MINIONS = 8
-HEALTHBAR_CLASSES = ["BlueChampionHealthbar", "RedChampionHealthbar", "BlueMinionHealthbar", "RedMinionHealthbar"]
-
 
 # NOTE: 
     # Riot calls these champions: "Renata", "MonkeyKing", "Nilah", "JarvanIV", 
@@ -43,14 +47,10 @@ WEIRD_NAMES = {
 }
 
 champtoi = {}
-itochamp = {}
-annotation_path = '../greenscreends/train/_annotations.coco.json'
-with open(annotation_path, 'r') as f:
-    data = json.load(f)
+itochamp = CLASSES.copy()
 
-for i, category in enumerate(data['categories']):
-    champtoi[category['name']] = i
-    itochamp[i] = category['name']
+for i, champion in itochamp.items():
+    champtoi[champion] = i
 
 for healthbar_class in HEALTHBAR_CLASSES:
     champtoi[healthbar_class] = len(champtoi)
@@ -1519,6 +1519,7 @@ def generate_single_image(
     
     except Exception as e:
         print(f"[Warning] iteration {i} failed: {e!r}")
+        traceback.print_exc()
         return None
 
 def generate_synthetic_ds_parallel(img_dir: str, 
@@ -1526,13 +1527,17 @@ def generate_synthetic_ds_parallel(img_dir: str,
     fx_folder: str, 
     hud_folder: str,
     icons_folder: str,
+    annotation_path: str,
     font_path: str,
     output_dir: str, 
     champs_to_exclude: set = None, 
+    rf_categories: list[dict] = None,
     images_per_unit: int = 500):
 
-    rf_categories = data['categories']
-    
+    with open(annotation_path, 'r') as f:
+        annotations = json.load(f)
+    rf_categories = annotations['categories']
+
     coco_dict = create_coco_dict(rf_categories)
 
     # Load image paths
@@ -1605,7 +1610,7 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Generate synthetic dataset for League of Legends.")
     parser.add_argument("--dataset_dir", type=str, default="../greenscreends/")
-    parser.add_argument("--split", type=str, choices=["train", "val"], default="train",
+    parser.add_argument("--split", type=str, choices=["train", "valid"], default="train",
                         help="Split to generate (train or val).")
     parser.add_argument("--fx_folder", type=str, default="../fx",
                         help="Folder containing FX images.")
@@ -1647,6 +1652,7 @@ def main():
         fx_folder=args.fx_folder,
         hud_folder=args.hud_folder,
         icons_folder=args.icons_folder,
+        annotation_path = os.path.join(args.dataset_dir, args.split, "_annotations.coco.json"), 
         font_path=args.font_path,
         output_dir=args.output_dir,
         champs_to_exclude=excluded_champs, 
