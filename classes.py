@@ -187,3 +187,5 @@ CLASSES = {
     185: 'Zoe',
     186: 'Zyra'
 }
+
+HEALTHBAR_CLASSES = ["BlueChampionHealthbar", "RedChampionHealthbar", "BlueMinionHealthbar", "RedMinionHealthbar"]
