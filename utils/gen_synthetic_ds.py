@@ -22,11 +22,14 @@ from joblib import Parallel, delayed
 from gen_minimap import ImageDrawer
 import traceback
 
+
 # Cannon and siege minions have a lower chance of appearing
 CANNON_CHANCE = 0.15
 SIEGE_CHANCE = 0.05
 NUM_CHAMPS = 170
 NUM_MINIONS = 8
+HEALTHBAR_CLASSES = ["BlueChampionHealthbar", "RedChampionHealthbar", "BlueMinionHealthbar", "RedMinionHealthbar"]
+
 
 # NOTE: 
     # Riot calls these champions: "Renata", "MonkeyKing", "Nilah", "JarvanIV", 
@@ -48,6 +51,10 @@ with open(annotation_path, 'r') as f:
 for i, category in enumerate(data['categories']):
     champtoi[category['name']] = i
     itochamp[i] = category['name']
+
+for healthbar_class in HEALTHBAR_CLASSES:
+    champtoi[healthbar_class] = len(champtoi)
+    itochamp[len(itochamp)] = healthbar_class
 
 minimap_drawer = ImageDrawer(resize=(256,256))
 
@@ -808,6 +815,10 @@ def add_healthbars(map_img, box_dict, mode, color, font, image_paths=None):
     :param image_paths: Required for mode="minions"; used to match team color.
     :return: Updated map image.
     """
+    box_dict_healthbars = {}
+    for healthbar_class in HEALTHBAR_CLASSES:
+        box_dict_healthbars[healthbar_class] = []
+
     healthbar_dir = "../cropped_healthbars"
     healthbar_paths = [os.path.join(healthbar_dir, f) for f in os.listdir(healthbar_dir)
                     if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
@@ -820,41 +831,52 @@ def add_healthbars(map_img, box_dict, mode, color, font, image_paths=None):
                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     
     if mode == "champs":
+        healthbar_type = ""
         for key, boxes in box_dict.items():
             if key in ['Mask', 'Ability']:
                 continue
             if key == 'Pet':
                 if color: 
                     hb_paths = blue_paths
+                    healthbar_type = "BlueMinionHealthbar"
                 else:
                     hb_paths = red_paths
+                    healthbar_type = "RedMinionHealthbar"
                 for pet_box in boxes:
-                    map_img = _draw_healthbar(map_img, pet_box, hb_paths, color=color, font=None)
+                    map_img, bounding_box = _draw_healthbar(map_img, pet_box, hb_paths, color=color, font=None)
+                    box_dict_healthbars[healthbar_type].append(bounding_box)
             else:
+                healthbar_type = "BlueChampionHealthbar" if color else "RedChampionHealthbar"
                 for box in boxes:
-                    map_img = _draw_healthbar(map_img, box, healthbar_paths, color=color, font = font)
+                    map_img, bounding_box = _draw_healthbar(map_img, box, healthbar_paths, color=color, font = font)
+                    box_dict_healthbars[healthbar_type].append(bounding_box)
 
     elif mode == "minions":
         assert image_paths is not None, "image_paths is required for minion mode."
 
-       
-
         for minion, boxes in box_dict.items():
+            healthbar_type = ""
+
             if 'red' in minion.lower(): 
                 hb_paths = red_paths
+                healthbar_type = "RedMinionHealthbar"
             else:
                 hb_paths = blue_paths
+                healthbar_type = "BlueMinionHealthbar"
+
             if minion in ['Mask', 'Ability']:
                 continue
             if minion == 'Pet':
                 for pet_group in boxes:
                     for pet_box in pet_group:
-                        map_img = _draw_healthbar(map_img, pet_box, hb_paths, font = None)
+                        map_img, bounding_box = _draw_healthbar(map_img, pet_box, hb_paths, font = None)
+                        box_dict_healthbars[healthbar_type].append(bounding_box)
             else:
                 for box in boxes:
-                    map_img = _draw_healthbar(map_img, box, hb_paths, font = None)
+                    map_img, bounding_box = _draw_healthbar(map_img, box, hb_paths, font = None)
+                    box_dict_healthbars[healthbar_type].append(bounding_box)
 
-    return map_img
+    return map_img, box_dict_healthbars
 
 def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=False, font = None):
     """
@@ -912,6 +934,8 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=Fal
         return map_img
 
     roi = map_img[hb_y1_clamped:hb_y2_clamped, hb_x1_clamped:hb_x2_clamped]
+    # also get bounding box of the healthbar
+    bounding_box = [hb_x1_clamped, hb_y1_clamped, hb_x2_clamped, hb_y2_clamped]
     healthbar_cropped = healthbar[y_offset:y_offset + cropped_h, x_offset:x_offset + cropped_w]
 
     if healthbar_cropped.shape[2] == 4:  # RGBA
@@ -922,7 +946,7 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=Fal
 
     map_img[hb_y1_clamped:hb_y2_clamped, hb_x1_clamped:hb_x2_clamped] = roi
 
-    return map_img
+    return map_img, bounding_box
 
 def remove_background(img: Image.Image, threshold: int = 60) -> Image.Image:
     img = img.convert("RGBA")
@@ -1384,7 +1408,7 @@ def generate_single_image(
 
         # Add health bars
         font = load_font(font_path, size = 10)
-        map_img = add_healthbars(
+        map_img, champ_health_box_dict = add_healthbars(
             map_img,
             box_dict_champ,
             color=random.choice([True, False]),
@@ -1392,7 +1416,7 @@ def generate_single_image(
             mode="champs"
         )
 
-        map_img = add_healthbars(
+        map_img, minion_health_box_dict = add_healthbars(
             map_img,
             box_dict_minion,
             mode="minions",
@@ -1414,10 +1438,13 @@ def generate_single_image(
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
+        health_boxes_c, health_labels_c = get_boxes_from_box_dict(champ_health_box_dict)
+        health_boxes_m, health_labels_m = get_boxes_from_box_dict(minion_health_box_dict)
         boxes_map, labels_map = get_boxes_from_box_dict(map_box_dict)
+
         
-        boxes = boxes_c + boxes_m + boxes_map
-        labels = labels_c + labels_m + labels_map
+        boxes = boxes_c + boxes_m + boxes_map + health_boxes_c + health_boxes_m
+        labels = labels_c + labels_m + labels_map + health_labels_c + health_labels_m
 
         blacklist = [
             ((952, 1080), (456, 1268)),   # (y0, y1), (x0, x1)
@@ -1479,7 +1506,7 @@ def generate_single_image(
         cv2.imwrite(img_path, map_img)
 
         # plot_image_with_boxes(
-        #     map_img, boxes, labels, output_dir=output_dir, split=split, count = i
+        #     map_img, health_boxes_c + health_boxes_m, health_labels_c + health_labels_m, output_dir=output_dir, split=split, count = i
         # )
 
         return {
@@ -1493,7 +1520,6 @@ def generate_single_image(
     except Exception as e:
         print(f"[Warning] iteration {i} failed: {e!r}")
         return None
-        
 
 def generate_synthetic_ds_parallel(img_dir: str, 
     split: str, 
