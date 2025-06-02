@@ -671,7 +671,7 @@ def generate_cutout(img_path, annotation_path, split, minion=False, make_transpa
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
 
-    if split == 'train':
+    if random.random() < 0.2 and split == 'train':
         if not minion:
             # Pick one preset according to GLOW_PROBS:
             chosen_preset = random.choices(GLOW_PRESETS, weights=GLOW_PROBS, k=1)[0]
