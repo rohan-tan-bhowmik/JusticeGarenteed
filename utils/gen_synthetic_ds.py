@@ -35,6 +35,72 @@ SIEGE_CHANCE = 0.05
 NUM_CHAMPS = 170
 NUM_MINIONS = 8
 
+GLOW_PRESETS = [
+    # Preset #1 Conq/stasis
+    {
+        "color":                   [0,   80,   140],
+        "glow_strength":          0.2,
+        "glow_radius":            6,
+        "glow_intensity":         0.8,
+        "champion_brightness":    0.3,
+        "inner_glow_radius":      7,
+        "inner_glow_intensity":   0.5,
+        "transparent_alpha_thresh": 0.2,
+    },
+    # Preset #2 Ignite
+    {
+        "color":                   [20,   50,   130],
+        "glow_strength":          0.2,
+        "glow_radius":            13,
+        "glow_intensity":         1.0,
+        "champion_brightness":    0.45,
+        "inner_glow_radius":      7,
+        "inner_glow_intensity":   1.0,
+        "transparent_alpha_thresh": 0.2,
+    },
+    # Preset #3 Pot
+    {
+        "color":                   [20,  110,    20],
+        "glow_strength":          0.05,
+        "glow_radius":            4,
+        "glow_intensity":         0.1,
+        "champion_brightness":    0.2,
+        "inner_glow_radius":      3,
+        "inner_glow_intensity":   0.1,
+        "transparent_alpha_thresh": 0.2,
+    },
+    # Preset #4 Baron
+    {
+        "color":                   [220,   0,  220],
+        "glow_strength":          0.05,
+        "glow_radius":            5,
+        "glow_intensity":         0.05,
+        "champion_brightness":    0.0,
+        "inner_glow_radius":      1,
+        "inner_glow_intensity":   0.05,
+        "transparent_alpha_thresh": 0.2,
+    },
+    # Preset #5 Rylai/serylda
+    {
+        "color":                   [228, 155, 115],
+        "glow_strength":          0.2,
+        "glow_radius":            9,
+        "glow_intensity":         0.7,
+        "champion_brightness":    0.1,
+        "inner_glow_radius":      8,
+        "inner_glow_intensity":   0.5,
+        "transparent_alpha_thresh": 0.2,
+    },
+]
+
+GLOW_PROBS = [
+    1.0,   # probability of picking Preset #1
+    0.0,   # probability of picking Preset #2
+    0.0,   # probability of picking Preset #3
+    0.0,   # probability of picking Preset #4
+    0.0,   # probability of picking Preset #5
+]
+
 # NOTE: 
     # Riot calls these champions: "Renata", "MonkeyKing", "Nilah", "JarvanIV", 
     # We call them: "renataglasc", "wukong", "nulah" (thanks for the typo Rohan), "jarvan"
@@ -150,26 +216,26 @@ def chroma_key_with_glow_preservation(
     champ_boxes=None,
     pet_boxes=None,
 ) -> np.ndarray:
-    if champ_boxes is None: champ_boxes = []
-    if pet_boxes is None: pet_boxes = []
+    if champ_boxes is None:
+        champ_boxes = []
+    if pet_boxes is None:
+        pet_boxes = []
 
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
     h, s, v = cv2.split(hsv)
-    shape = h.shape
+    H, W = h.shape
 
-    region = np.zeros(shape, dtype=np.uint8)  # 0: normal, 1: champ, 2: pet
+    region = np.zeros((H, W), dtype=np.uint8)
+    for x0, y0, x1, y1 in champ_boxes:
+        region[y0:y1, x0:x1] = 1
+    for x0, y0, x1, y1 in pet_boxes:
+        region[y0:y1, x0:x1] = 2
 
-    for x_min, y_min, x_max, y_max in champ_boxes:
-        region[y_min:y_max, x_min:x_max] = 1
-    for x_min, y_min, x_max, y_max in pet_boxes:
-        region[y_min:y_max, x_min:x_max] = 2
+    normal = (region == 0)
+    champ = (region == 1)
+    pet = (region == 2)
 
-    normal = region == 0
-    champ = region == 1
-    pet = region == 2
-
-    # Strong lime removal
-    strong_mask = np.zeros(shape, dtype=bool)
+    strong_mask = np.zeros((H, W), dtype=bool)
     if aggressive:
         strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 100) & (v >= 100) & normal
     else:
@@ -177,44 +243,54 @@ def chroma_key_with_glow_preservation(
     strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 150) & (v >= 150) & champ
     strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 170) & (v >= 170) & pet
 
-    out = img_bgr.copy()
-    out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
+    # clean up tiny white fringes via morphological open + slight blur
+    mask_uint8 = (strong_mask.astype(np.uint8)) * 255
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel, iterations=1)
+    cleaned_blur = cv2.GaussianBlur(cleaned.astype(np.float32), (5, 5), sigmaX=1.5)
+    cleaned_alpha = (cleaned_blur / 255.0).clip(0, 1)
 
-    out[strong_mask] = (255, 255, 255, 0)
+    out = cv2.cvtColor(img_bgr.copy(), cv2.COLOR_BGR2BGRA)
+    TP = (cleaned_alpha >= 0.95)
+    out[TP] = (255, 255, 255, 0)
 
     b, g, r = cv2.split(img_bgr.astype(np.float32))
     max_rgb = np.maximum(np.maximum(r, g), b)
     min_rgb = np.minimum(np.minimum(r, g), b)
     grayness = 1.0 - (max_rgb - min_rgb) / 255.0
-    # Now normalize brightness
     brightness = v / 255.0
-    # Whiteness should be large only when both grayness≈1 and brightness≈1
-    whiteness = grayness * brightness**2 * 5
+    whiteness = grayness * (brightness ** 2) * 5
 
-    # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
     hue_center = (hsv_lower + hsv_upper) / 2
     hue_range = ((hsv_upper - hsv_lower) / 2) * 2
-    distance_from_lime = ((np.abs(h - hue_center)) / hue_range)
+    distance_from_lime = np.abs(h - hue_center) / hue_range
 
     non_white = np.any(img_bgr != [255, 255, 255], axis=-1)
-    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/hue_center / hue_range), 0, 1)
+    avg_proximity = np.clip(
+        float(distance_from_lime[non_white].mean()) * (3 / hue_center / hue_range),
+        0, 1
+    )
 
-    # compute per-pixel darkening factor in [0..1]
-    scale = np.clip(distance_from_lime * (255 - v * 0.25) * (1 - avg_proximity) * (1.0 + whiteness**2), 0, 255) / 255.0
-    # scale *= (1.0 + whiteness)
+    scale = (
+        distance_from_lime
+        * (255 - v * 0.25)
+        * (1 - avg_proximity)
+        * (1.0 + whiteness ** 2)
+    ).clip(0, 255) / 255.0
 
-    # mask of “foreground” (any pixel that isn’t pure white)
     fg = np.any(out[..., :3] != 255, axis=-1)
-
-    # darken only those foreground pixels, channel by channel
     for c in range(3):
         ch = out[..., c].astype(np.float32)
         ch[fg] *= scale[fg]
         out[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
 
-    # leave the alpha as you originally intended
-    out[..., 3] = np.clip((distance_from_lime + (255 - v*1) / 255)**2 * (255 - v * 0.4) * (1 - avg_proximity), 0, 255).astype(np.uint8)
+    computed_alpha = (
+        (distance_from_lime + (255 - v) / 255) ** 2
+        * (255 - v * 0.4)
+        * (1 - avg_proximity)
+    ).clip(0, 255).astype(np.uint8)
 
+    out[..., 3] = np.where(TP, 0, computed_alpha)
     return out
   
 def IoU(box1, box2):
@@ -347,6 +423,118 @@ def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
     cutout[..., 3] = (cutout[..., 3] * alpha_factor).astype(np.uint8)
 
     return cutout
+
+def glow_augment(
+    cutout: np.ndarray,
+    color: np.ndarray,
+    glow_strength: float,
+    glow_radius: int,
+    glow_intensity: float,
+    champion_brightness: float,
+    inner_glow_radius: int,
+    inner_glow_intensity: float,
+    transparent_alpha_thresh: float
+) -> np.ndarray:
+    """
+    Apply an orange tint + inner bloom + a Gaussian‐smoothed outer halo.
+
+    1) Pixels with original alpha < transparent_alpha_thresh → forced white.
+    2) “Champion” = any pixel not white.
+    3) Tint+brighten champion pixels, then add an inner Gaussian bloom for a glowing core.
+    4) Compute dist = distanceTransform( background_mask ), where background_mask = 255 outside champion, 0 on champion.
+    5) α_halo(x) = glow_intensity * exp( - dist(x)^2 / (2·σ^2) ), with σ = glow_radius/2.
+       → By dist≈glow_radius, α_halo is already near zero → very soft edge.
+    6) Composite:
+        • champion (α=255): tinted+inner bloom.
+        • halo pixels: pure “color” at α = round(255·α_halo).
+        • everything else → white & α=0.
+    """
+
+    # 1) Split BGR and normalized alpha
+    bgr_orig   = cutout[..., :3].astype(np.float32)
+    alpha_orig = cutout[..., 3].astype(np.float32) / 255.0
+    H, W = alpha_orig.shape
+
+    # 2) Paint fully‐transparent (< thresh) pixels white
+    white = np.array([255, 255, 255], dtype=np.float32)
+    base_bgr = bgr_orig.copy()
+    transparent_mask = (alpha_orig < transparent_alpha_thresh)
+    base_bgr[transparent_mask] = white
+
+    # 3) Champion mask = any pixel that’s not white
+    champion_mask = np.any(base_bgr < 250, axis=-1)  # H×W boolean
+
+    # 4) Tint + brighten champion pixels
+    tint_color = np.array(color, dtype=np.float32)
+    tinted = base_bgr.copy()
+    # 4a) Blend toward tint_color
+    tinted[champion_mask] = (
+        (1.0 - glow_strength) * base_bgr[champion_mask]
+        + glow_strength * tint_color
+    )
+    # 4b) Boost brightness
+    tinted[champion_mask] = np.clip(
+        tinted[champion_mask] * (1.0 + champion_brightness),
+        0, 255
+    )
+
+    # --- INNER “BLOOM” PASS ---
+    champion_only = np.zeros((H, W, 3), dtype=np.float32)
+    champion_only[champion_mask] = tinted[champion_mask]
+
+    inner_blur = cv2.GaussianBlur(
+        champion_only.astype(np.uint8),
+        (0, 0),
+        inner_glow_radius
+    ).astype(np.float32)
+
+    tinted_plus_inner = tinted.copy()
+    if inner_glow_intensity > 0:
+        # 4c) Add blurred bloom back into champion
+        tinted_plus_inner[champion_mask] = np.clip(
+            tinted[champion_mask]
+            + inner_blur[champion_mask] * inner_glow_intensity,
+            0, 255
+        )
+
+    # --- OUTER GAUSSIAN HALO PASS ---
+    # 5) Build a binary mask: champion=0, background=255
+    inv_mask = (~champion_mask).astype(np.uint8) * 255
+
+    # 6) distance transform → dist[y,x] = Euclidean distance to nearest champion pixel
+    dist = cv2.distanceTransform(inv_mask, cv2.DIST_L2, 5).astype(np.float32)
+
+    # 7) Use a Gaussian falloff: σ = glow_radius / 2
+    sigma = glow_radius / 2.0
+    # α_halo ∈ [0..1]:  
+    #    α_halo = glow_intensity * exp( - (dist^2) / (2σ^2) )
+    # For dist ≈ glow_radius, exponent ≈ - ( (r)^2 / (2·(r/2)^2 ) ) = - ( r^2 / ( r^2/2 ) ) = -2 → very small α_halo
+    alpha_halo = glow_intensity * np.exp(- (dist**3) / (2.0 * sigma * sigma))
+    # Clamp to [0..1]
+    alpha_halo = np.clip(alpha_halo, 0.0, 1.0)
+
+    # 8) Prepare output canvases
+    composite_rgb = np.zeros((H, W, 3), dtype=np.uint8)
+    new_alpha     = np.zeros((H, W), dtype=np.uint8)
+
+    # 9) Draw tinted+inner champion (α=255)
+    composite_rgb[champion_mask] = tinted_plus_inner[champion_mask].astype(np.uint8)
+    new_alpha[champion_mask]     = 255
+
+    # 10) Draw pure‐color outer halo where α_halo>0 & not champion
+    halo_region = (alpha_halo > 0) & (~champion_mask)
+    composite_rgb[halo_region] = tint_color.astype(np.uint8)
+    # Convert α_halo [0..1] → [0..255]
+    halo_alpha_vals = (alpha_halo[halo_region] * 255.0).astype(np.uint8)
+    new_alpha[halo_region] = halo_alpha_vals
+
+    # 11) Everything else → white & fully transparent
+    background_mask = (new_alpha == 0)
+    composite_rgb[background_mask] = 255
+
+    # 12) Stack into BGRA and return
+    output = np.dstack((composite_rgb, new_alpha))
+    return output
 
 def hv_jitter(cutout, hue_shift_limit=40, val_shift_limit=0.15):
     """
@@ -492,10 +680,11 @@ def generate_cutout(img_path, annotation_path, split, minion=False, make_transpa
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
 
-    if random.random() < 0.5 and split == 'train':
-        if not minion:  # skip if it's a red or blue minion
-            # Apply HSV jitter to the cutout
-            cutout = hv_jitter(cutout, hue_shift_limit=25, val_shift_limit=0.15)
+    if random.random() < 0.25 and split == 'train':
+        if not minion:
+            # Pick one preset according to GLOW_PROBS:
+            chosen_preset = random.choices(GLOW_PRESETS, weights=GLOW_PROBS, k=1)[0]
+            cutout = glow_augment(cutout, **chosen_preset)
         else:
             cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
 
