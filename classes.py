@@ -185,7 +185,11 @@ CLASSES = {
     183: 'Ziggs',
     184: 'Zilean',
     185: 'Zoe',
-    186: 'Zyra'
+    186: 'Zyra', 
+    187: 'BlueChampionHealthbar',
+    188: 'RedChampionHealthbar',
+    189: 'BlueMinionHealthbar',
+    190: 'RedMinionHealthbar',
 }
 
 HEALTHBAR_CLASSES = ["BlueChampionHealthbar", "RedChampionHealthbar", "BlueMinionHealthbar", "RedMinionHealthbar"]
