@@ -1,9 +1,18 @@
 import json
+HEALTHBAR_CLASSES = ["BlueChampionHealthbar", "RedChampionHealthbar", "BlueMinionHealthbar", "RedMinionHealthbar"]
 
 def create_coco_dict(rf_categories):
     """
     Create a COCO format dictionary with rf_categories from roboflow dataset
     """
+
+    for healthbar_class in HEALTHBAR_CLASSES:
+        rf_categories.append({
+            "id": len(rf_categories),
+            "name": healthbar_class, 
+            "supercategory": "league"
+        })
+
     return {
         "info": {},
         "licenses": [],
@@ -11,7 +20,6 @@ def create_coco_dict(rf_categories):
         "annotations": [],
         "categories": rf_categories
     }
-
 
 def add_to_coco(coco_dict, rf_categories, boxes, labels, h, w, img_name):
     """

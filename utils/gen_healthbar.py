@@ -72,7 +72,7 @@ def process_healthbar_template(img: np.ndarray,
         damage_w = random.randint(1, total_w)
     else:
         damage_w = 0
-    health_w = random.randint(0, total_w - damage_w)
+    health_w = int((total_w - damage_w )* (1 - (random.randint(0, total_w - damage_w) / (total_w - damage_w + 0.0001))**2))
     h_end = x1 + health_w
     d_end = h_end + damage_w
 

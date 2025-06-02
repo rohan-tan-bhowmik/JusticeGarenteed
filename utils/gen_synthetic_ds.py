@@ -9,6 +9,7 @@ from gen_healthbar import process_healthbar_template, load_font
 import xml.etree.ElementTree as ET
 
 import os
+import sys
 import random
 import argparse
 import math
@@ -17,8 +18,16 @@ from coco_util import create_coco_dict, add_to_coco
 from tqdm import tqdm
 
 from itertools import product
+from joblib import Parallel, delayed
 
 from gen_minimap import ImageDrawer
+import traceback
+
+base_dir = os.path.dirname(__file__) 
+parent_dir = os.path.abspath(os.path.join(base_dir, ".."))
+sys.path.insert(0, parent_dir)
+
+from classes import CLASSES, HEALTHBAR_CLASSES
 
 # Cannon and siege minions have a lower chance of appearing
 CANNON_CHANCE = 0.15
@@ -38,14 +47,14 @@ WEIRD_NAMES = {
 }
 
 champtoi = {}
-itochamp = {}
-annotation_path = '../greenscreends/train/_annotations.coco.json'
-with open(annotation_path, 'r') as f:
-    data = json.load(f)
+itochamp = CLASSES.copy()
 
-for i, category in enumerate(data['categories']):
-    champtoi[category['name']] = i
-    itochamp[i] = category['name']
+for i, champion in itochamp.items():
+    champtoi[champion] = i
+
+for healthbar_class in HEALTHBAR_CLASSES:
+    champtoi[healthbar_class] = len(champtoi)
+    itochamp[len(itochamp)] = healthbar_class
 
 minimap_drawer = ImageDrawer(resize=(256,256))
 
@@ -99,7 +108,7 @@ def plot_image_with_boxes(img, boxes, labels, output_dir, split, count):
         plt.gca().add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='red', linewidth=1))
         plt.text(xmin, ymin -25, str(itochamp[label]), color='red', fontsize=7)
 
-    plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=500)
+    plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=400)
 
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
     """
@@ -135,8 +144,8 @@ def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5
   
 def chroma_key_with_glow_preservation(
     img_bgr: np.ndarray,
-    hsv_lower: int = 45,
-    hsv_upper: int = 75,
+    hsv_lower: int = 50,
+    hsv_upper: int = 70,
     aggressive: bool = False,
     champ_boxes=None,
     pet_boxes=None,
@@ -169,23 +178,30 @@ def chroma_key_with_glow_preservation(
     strong_mask |= (h >= hsv_lower) & (h <= hsv_upper) & (s >= 170) & (v >= 170) & pet
 
     out = img_bgr.copy()
-    out[strong_mask] = (255, 255, 255)
-
     out = cv2.cvtColor(out, cv2.COLOR_BGR2BGRA)
-    whiteness = (v / 255.0 + (255.0 - s) / 255.0) * 0.05 
+
+    out[strong_mask] = (255, 255, 255, 0)
+
+    b, g, r = cv2.split(img_bgr.astype(np.float32))
+    max_rgb = np.maximum(np.maximum(r, g), b)
+    min_rgb = np.minimum(np.minimum(r, g), b)
+    grayness = 1.0 - (max_rgb - min_rgb) / 255.0
+    # Now normalize brightness
+    brightness = v / 255.0
+    # Whiteness should be large only when both grayness≈1 and brightness≈1
+    whiteness = grayness * brightness**2 * 5
 
     # Compute per-pixel proximity to lime (centered in hsv_lower and hsv_upper)
     hue_center = (hsv_lower + hsv_upper) / 2
-    hue_range = (hsv_upper - hsv_lower) / 2
-    distance_from_lime = (np.abs(h - hue_center) / hue_range)
+    hue_range = ((hsv_upper - hsv_lower) / 2) * 2
+    distance_from_lime = ((np.abs(h - hue_center)) / hue_range)
 
     non_white = np.any(img_bgr != [255, 255, 255], axis=-1)
-    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/max(hue_center, (180-1) - hue_center) / hue_range), 0, 1)
+    avg_proximity = np.clip(float(distance_from_lime[non_white].mean()) * (3/hue_center / hue_range), 0, 1)
 
     # compute per-pixel darkening factor in [0..1]
-    scale = np.clip(distance_from_lime * (255 - v * 0.5) * (1 - avg_proximity), 0, 255) / 255.0
-    scale *= (1.0 - whiteness)
-
+    scale = np.clip(distance_from_lime * (255 - v * 0.25) * (1 - avg_proximity) * (1.0 + whiteness**2), 0, 255) / 255.0
+    # scale *= (1.0 + whiteness)
 
     # mask of “foreground” (any pixel that isn’t pure white)
     fg = np.any(out[..., :3] != 255, axis=-1)
@@ -197,7 +213,7 @@ def chroma_key_with_glow_preservation(
         out[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
 
     # leave the alpha as you originally intended
-    out[..., 3] = np.clip(distance_from_lime * (255 - v) * (1 - avg_proximity), 0, 255).astype(np.uint8)
+    out[..., 3] = np.clip((distance_from_lime + (255 - v*1) / 255)**2 * (255 - v * 0.4) * (1 - avg_proximity), 0, 255).astype(np.uint8)
 
     return out
   
@@ -261,16 +277,17 @@ def chroma_crop_out_white(img, box):
         x_max = x + x_min + w
         y_max = y + y_min + h
         box = [x_min, y_min, x_max, y_max]
-        plt.imshow(cropped_img)
-        plt.show()
+        
         return cropped_img, box
 
     else:
         # No contours found, return the cropped image and box
         return cropped_img, box
+
 def expand_cutout(cutout: np.ndarray,
                   champion_box: list[int],
                   mask_box:    list[int],
+                  pet_boxes: list[list[int]] = [],
                   scale_factor: float = 4/3):
     """
     Resize the cutout by `scale_factor` (both width and height), and
@@ -309,51 +326,75 @@ def expand_cutout(cutout: np.ndarray,
     champ_box_adj = scale_box(champion_box)
     mask_box_adj  = scale_box(mask_box)
 
-    return resized, champ_box_adj, mask_box_adj
-def expand_cutout(cutout: np.ndarray,
-                  champion_box: list[int],
-                  mask_box:    list[int],
-                  scale_factor: float = 4/3):
-    """
-    Resize the cutout by `scale_factor` (both width and height), and
-    scale champion_box & mask_box coordinates accordingly.
+    if not pet_boxes:
+        pet_boxes_adj = []
 
-    Args:
-      cutout:        H×W×C image.
-      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
-      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
-      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
+    pet_boxes_adj = [scale_box(box) for box in pet_boxes]
+
+    return resized, champ_box_adj, mask_box_adj, pet_boxes_adj
+
+def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
+    """
+    Reduce the transparency of the cutout image by scaling the alpha channel.
+    
+    :param cutout: Cutout image with an alpha channel (HWC, BGRA).
+    :return: Cutout image with reduced transparency.
+    """
+    if cutout.shape[2] != 4:
+        raise ValueError("Cutout must have an alpha channel (BGRA format).")
+
+    alpha_factor = random.uniform(min_alpha_factor, max_alpha_factor)
+    cutout[..., 3] = (cutout[..., 3] * alpha_factor).astype(np.uint8)
+
+    return cutout
+
+def hv_jitter(cutout, hue_shift_limit=40, val_shift_limit=0.15):
+    """
+    Apply HV jitter to non-white pixels in the champion region of a BGRA cutout image.
+
+    Parameters:
+        cutout (np.ndarray): Input image in BGRA format.
+        hue_shift_limit (int): Max hue shift in degrees (-h, h).
+        sat_shift_limit (float): Max saturation shift percentage (-s, s).
+        val_shift_limit (float): Max brightness shift percentage (-v, v).
 
     Returns:
-      resized_cutout:   the cutout resized to (W*scale, H*scale).
-      champ_box_adj:    scaled champion_box in the new image.
-      mask_box_adj:     scaled mask_box in the new image.
+        np.ndarray: Augmented image in BGRA format.
     """
-    H, W = cutout.shape[:2]
 
-    # 1) compute new dimensions
-    new_W = int(round(W * scale_factor))
-    new_H = int(round(H * scale_factor))
+    # x_min, y_min, x_max, y_max = champion_box
+    # champion_region = cutout[y_min:y_max, x_min:x_max].copy()
 
-    # 2) resize the image
-    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
+    # Separate BGR and alpha
+    bgr = cutout[:, :, :3]
+    alpha = cutout[:, :, 3]
 
-    # 3) scale the box coordinates
-    def scale_box(box):
-        x0, y0, x1, y1 = box
-        return [
-            int(round(x0 * scale_factor)),
-            int(round(y0 * scale_factor)),
-            int(round(x1 * scale_factor)),
-            int(round(y1 * scale_factor)),
-        ]
+    # Mask for non-white pixels (white = [255,255,255])
+    non_white_mask = np.any(bgr < 250, axis=-1)  # more robust than strict == 255
 
-    champ_box_adj = scale_box(champion_box)
-    mask_box_adj  = scale_box(mask_box)
+    # Convert to HSV
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV).astype(np.float32)
 
-    return resized, champ_box_adj, mask_box_adj
+    # Jitter values with a Gaussian
+    hue_shift = np.random.normal(0, scale = hue_shift_limit)
+    val_shift = np.random.normal(0, scale = val_shift_limit)
 
-def generate_cutout(img_path, annotation_path, minion=False):
+    # Apply jitter only where non-white
+    hsv[..., 0][non_white_mask] = (hsv[..., 0][non_white_mask] + hue_shift) % 180
+    hsv[..., 2][non_white_mask] = np.clip(hsv[..., 2][non_white_mask] * (1 + val_shift), 0, 255)
+
+    # Back to BGR
+    bgr_jittered = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
+
+    # Reattach alpha
+    champion_jittered = np.dstack((bgr_jittered, alpha))
+
+    # Replace region in cutout
+    # cutout[y_min:y_max, x_min:x_max] = champion_jittered
+
+    return champion_jittered
+ 
+def generate_cutout(img_path, annotation_path, split, minion=False, make_transparent_prob = 0.05):
     """
     Generate a cutout image from the original image and its corresponding XML file.
     Returns cutout and a dictionary with bounding boxes for champion, pet, and ability in PASCAL VOC format.
@@ -420,8 +461,18 @@ def generate_cutout(img_path, annotation_path, minion=False):
     champion_box = [x_min_champ, y_min_champ, x_max_champ, y_max_champ]
     
     # Provide a random chance to expand the cutout
-    if not minion and random.random() < 0.5:  # skip if it's a red or blue minion 
-        cutout, champion_box, mask_box = expand_cutout(cutout, champion_box, mask_box, scale_factor=4/3)
+    if random.random() < 0.5:
+        if not minion:  # skip if it's a red or blue minion 
+            scale_factor = random.choices(
+                population=[6/5, 4/3, 3/2],
+                weights=[0.70, 0.25, 0.05],  # your custom probabilities
+                k=1  # number of items to choose
+            )[0]
+
+            cutout, champion_box, mask_box, pet_boxes = expand_cutout(cutout, champion_box, mask_box, pet_boxes = pet_boxes, scale_factor=scale_factor)
+
+        else:
+            cutout, champion_box, mask_box, pet_boxes = expand_cutout(cutout, champion_box, mask_box, scale_factor = 6/5)
 
     # Add the mask box to the box_dict
     box_dict["Mask"].append(list(mask_box))
@@ -440,6 +491,18 @@ def generate_cutout(img_path, annotation_path, minion=False):
             
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
+
+    if random.random() < 0.5 and split == 'train':
+        if not minion:  # skip if it's a red or blue minion
+            # Apply HSV jitter to the cutout
+            cutout = hv_jitter(cutout, hue_shift_limit=25, val_shift_limit=0.15)
+        else:
+            cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
+
+    # Occasionally make cutout transparent to simulate hiding in bushes
+    if random.random() < make_transparent_prob:
+        cutout = reduce_transparency(cutout)
+
     return cutout, box_dict 
   
 def count_non_white_pixels(img):
@@ -458,7 +521,7 @@ def count_non_white_pixels(img):
     # Count non-white pixels
     return np.sum(non_white_mask)
 
-def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_boxes = None):
+def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, split):
     """
     Generate cutouts for multiple images and their corresponding bounding boxes.
     
@@ -472,12 +535,12 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, map_
     minion_box_dicts = []
     
     for img_path in champion_img_paths:
-        cutout, box_dict = generate_cutout(img_path, annotation_path)
+        cutout, box_dict = generate_cutout(img_path, annotation_path, split)
         cutouts.append(cutout)
         box_dicts.append(box_dict)
     
     for img_path in minion_img_paths:
-        cutout, box_dict = generate_cutout(img_path, annotation_path, minion=True)
+        cutout, box_dict = generate_cutout(img_path, annotation_path, split, minion=True)
         minion_cutouts.append(cutout)
         minion_box_dicts.append(box_dict)
 
@@ -519,49 +582,6 @@ def box_intersects_map_boxes(box, map_boxes, x_tolerance = 50, y_tolerance = 100
             return True
 
     return False
-    
-def expand_cutout(cutout: np.ndarray,
-                  champion_box: list[int],
-                  mask_box:    list[int],
-                  scale_factor: float = 4/3):
-    """
-    Resize the cutout by `scale_factor` (both width and height), and
-    scale champion_box & mask_box coordinates accordingly.
-
-    Args:
-      cutout:        H×W×C image.
-      champion_box:  [x_min, y_min, x_max, y_max] in cutout coords.
-      mask_box:      [x_min, y_min, x_max, y_max] in cutout coords.
-      scale_factor:  how much to enlarge (e.g. 1.33 = 133%).
-
-    Returns:
-      resized_cutout:   the cutout resized to (W*scale, H*scale).
-      champ_box_adj:    scaled champion_box in the new image.
-      mask_box_adj:     scaled mask_box in the new image.
-    """
-    H, W = cutout.shape[:2]
-
-    # 1) compute new dimensions
-    new_W = int(round(W * scale_factor))
-    new_H = int(round(H * scale_factor))
-
-    # 2) resize the image
-    resized = cv2.resize(cutout, (new_W, new_H), interpolation=cv2.INTER_LINEAR)
-
-    # 3) scale the box coordinates
-    def scale_box(box):
-        x0, y0, x1, y1 = box
-        return [
-            int(round(x0 * scale_factor)),
-            int(round(y0 * scale_factor)),
-            int(round(x1 * scale_factor)),
-            int(round(y1 * scale_factor)),
-        ]
-
-    champ_box_adj = scale_box(champion_box)
-    mask_box_adj  = scale_box(mask_box)
-
-    return resized, champ_box_adj, mask_box_adj
 
 def place_cutout(map_img, cutout, box_dict, x, y, map_boxes):
     """
@@ -706,6 +726,7 @@ def place_cutouts_on_map(map_img, cutouts, box_dicts, map_boxes, num_sprites, mi
                     if np.hypot(x_cand - x_o, y_cand - y_o) < (radius + r_o) * MIN_SEP:
                         collision = True
                         break
+
                 if collision:
                     attempts += 1
                     continue
@@ -794,6 +815,10 @@ def add_healthbars(map_img, box_dict, mode, color, font, image_paths=None):
     :param image_paths: Required for mode="minions"; used to match team color.
     :return: Updated map image.
     """
+    box_dict_healthbars = {}
+    for healthbar_class in HEALTHBAR_CLASSES:
+        box_dict_healthbars[healthbar_class] = []
+
     healthbar_dir = "../cropped_healthbars"
     healthbar_paths = [os.path.join(healthbar_dir, f) for f in os.listdir(healthbar_dir)
                     if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
@@ -806,41 +831,52 @@ def add_healthbars(map_img, box_dict, mode, color, font, image_paths=None):
                 if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
     
     if mode == "champs":
+        healthbar_type = ""
         for key, boxes in box_dict.items():
             if key in ['Mask', 'Ability']:
                 continue
             if key == 'Pet':
                 if color: 
                     hb_paths = blue_paths
+                    healthbar_type = "BlueMinionHealthbar"
                 else:
                     hb_paths = red_paths
+                    healthbar_type = "RedMinionHealthbar"
                 for pet_box in boxes:
-                    map_img = _draw_healthbar(map_img, pet_box, hb_paths, color=color, font=None)
+                    map_img, bounding_box = _draw_healthbar(map_img, pet_box, hb_paths, color=color, font=None)
+                    box_dict_healthbars[healthbar_type].append(bounding_box)
             else:
+                healthbar_type = "BlueChampionHealthbar" if color else "RedChampionHealthbar"
                 for box in boxes:
-                    map_img = _draw_healthbar(map_img, box, healthbar_paths, color=color, font = font)
+                    map_img, bounding_box = _draw_healthbar(map_img, box, healthbar_paths, color=color, font = font)
+                    box_dict_healthbars[healthbar_type].append(bounding_box)
 
     elif mode == "minions":
         assert image_paths is not None, "image_paths is required for minion mode."
 
-       
-
         for minion, boxes in box_dict.items():
+            healthbar_type = ""
+
             if 'red' in minion.lower(): 
                 hb_paths = red_paths
+                healthbar_type = "RedMinionHealthbar"
             else:
                 hb_paths = blue_paths
+                healthbar_type = "BlueMinionHealthbar"
+
             if minion in ['Mask', 'Ability']:
                 continue
             if minion == 'Pet':
                 for pet_group in boxes:
                     for pet_box in pet_group:
-                        map_img = _draw_healthbar(map_img, pet_box, hb_paths, font = None)
+                        map_img, bounding_box = _draw_healthbar(map_img, pet_box, hb_paths, font = None)
+                        box_dict_healthbars[healthbar_type].append(bounding_box)
             else:
                 for box in boxes:
-                    map_img = _draw_healthbar(map_img, box, hb_paths, font = None)
+                    map_img, bounding_box = _draw_healthbar(map_img, box, hb_paths, font = None)
+                    box_dict_healthbars[healthbar_type].append(bounding_box)
 
-    return map_img
+    return map_img, box_dict_healthbars
 
 def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=False, font = None):
     """
@@ -860,7 +896,7 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=Fal
     if font is not None:
         num_healthbar_indices = len(healthbar_paths)
         # Sample a gaussian distribution with mean 11, std 5
-        sample_index = np.random.normal(loc=11, scale=5, size= 1)
+        sample_index = np.random.normal(loc=11, scale=5, size= 1)[0]
         sample_index = int(np.clip(sample_index, 0, num_healthbar_indices - 1))
         healthbar_path = sorted(healthbar_paths)[sample_index]
 
@@ -898,6 +934,8 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=Fal
         return map_img
 
     roi = map_img[hb_y1_clamped:hb_y2_clamped, hb_x1_clamped:hb_x2_clamped]
+    # also get bounding box of the healthbar
+    bounding_box = [hb_x1_clamped, hb_y1_clamped, hb_x2_clamped, hb_y2_clamped]
     healthbar_cropped = healthbar[y_offset:y_offset + cropped_h, x_offset:x_offset + cropped_w]
 
     if healthbar_cropped.shape[2] == 4:  # RGBA
@@ -908,7 +946,7 @@ def _draw_healthbar(map_img, box, healthbar_paths, damage_prob = 0.10, color=Fal
 
     map_img[hb_y1_clamped:hb_y2_clamped, hb_x1_clamped:hb_x2_clamped] = roi
 
-    return map_img
+    return map_img, bounding_box
 
 def remove_background(img: Image.Image, threshold: int = 60) -> Image.Image:
     img = img.convert("RGBA")
@@ -1222,61 +1260,20 @@ def overlay_random_fx(base_img: np.ndarray, fx_folder: str, num_samples: int = 5
 
     return base_img
 
-def generate_synthetic_ds(img_dir: str, 
-    split: str, 
-    fx_folder: str, 
-    hud_folder: str,
-    icons_folder: str,
-    font_path: str,
-    output_dir: str, 
-    champs_to_exclude: set = None, 
-    images_per_unit: int = 500):
-    """
-    :param dataset_dir: Directory containing the dataset.
-    :param split: split to generate 'train' and 'val'
-    :param fx_folder: Directory containing the FX images.
-    :param font_path: Path to the font file for health bars.
-    :param output_dir: Directory to save the generated images.
-    :param champs_to_exclude: set of champion names to exclude from the dataset.
-    :param images_per_unit: Number of images to generate per unit (champion or minion).
-    """
-    rf_categories = data['categories']
-    coco_dict = create_coco_dict(rf_categories)
-
-    # Load image paths
-    img_dir = os.path.join(img_dir, split)
-    all_files = os.listdir(img_dir)
-    all_imgs = [img for img in all_files if img.endswith('.jpg')]
-    map_imgs = [os.path.join(img_dir, img) for img in all_imgs if img.startswith('map_frame_')]
-    # Separate by role
-    champ_imgs = []
-    champ_names = set()
-    for img in all_imgs:
-        if not img.startswith(('red-','blue-', 'map_frame_')):
-            if '-' in img:
-                champ_name = img[:img.find('-')]
-            else:
-                champ_name = img[:img.find('_')]
-            if champ_name in WEIRD_NAMES:
-                champ_name = WEIRD_NAMES[champ_name]
-            if champ_name not in champs_to_exclude:                
-                champ_imgs.append(os.path.join(img_dir, img))
-                champ_names.add(champ_name)
-
-    minion_imgs = [os.path.join(img_dir, img)
-                for img in all_imgs if img.startswith(('red-','blue-'))]
-    minion_imgs_dict = {}
-    for img in minion_imgs:
-        if 'caster' in img:
-            minion_imgs_dict.setdefault('caster', []).append(img)
-        elif 'melee' in img:
-            minion_imgs_dict.setdefault('melee', []).append(img)
-        elif 'cannon' in img:
-            minion_imgs_dict.setdefault('cannon', []).append(img)
-        elif 'siege' in img:
-            minion_imgs_dict.setdefault('siege', []).append(img)
-
-    for i in tqdm(range(images_per_unit * (NUM_CHAMPS + NUM_MINIONS - len(champs_to_exclude))), desc=f"Generating {split} dataset"):
+def generate_single_image(
+    i,
+    split,
+    champ_imgs,
+    champ_names,
+    minion_imgs_dict,
+    map_imgs,
+    fx_folder,
+    hud_folder,
+    icons_folder,
+    font_path,
+    output_dir,
+    annotation_path):
+    try:
         # Champions have mean 1 std 3 clamp to 1 to 10
         num_champions = int(np.clip(random.gauss(1, 3), 1, 10))
         # num_champions = 1
@@ -1327,7 +1324,7 @@ def generate_synthetic_ds(img_dir: str,
                 map_box_dict[itochamp[label]].append(box)
 
         # Place champions & minions
-        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, map_boxes)
+        champ_cutouts, champ_box_dicts, minion_cutouts, minion_box_dicts = generate_cutouts(test_imgs, minion_imgs, annotation_path, split)
 
         # Ensure box_dicts are lists
         champ_box_dicts = list(champ_box_dicts)
@@ -1411,7 +1408,7 @@ def generate_synthetic_ds(img_dir: str,
 
         # Add health bars
         font = load_font(font_path, size = 10)
-        map_img = add_healthbars(
+        map_img, champ_health_box_dict = add_healthbars(
             map_img,
             box_dict_champ,
             color=random.choice([True, False]),
@@ -1419,7 +1416,7 @@ def generate_synthetic_ds(img_dir: str,
             mode="champs"
         )
 
-        map_img = add_healthbars(
+        map_img, minion_health_box_dict = add_healthbars(
             map_img,
             box_dict_minion,
             mode="minions",
@@ -1441,10 +1438,13 @@ def generate_synthetic_ds(img_dir: str,
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
+        health_boxes_c, health_labels_c = get_boxes_from_box_dict(champ_health_box_dict)
+        health_boxes_m, health_labels_m = get_boxes_from_box_dict(minion_health_box_dict)
         boxes_map, labels_map = get_boxes_from_box_dict(map_box_dict)
+
         
-        boxes = boxes_c + boxes_m + boxes_map
-        labels = labels_c + labels_m + labels_map
+        boxes = boxes_c + boxes_m + boxes_map + health_boxes_c + health_boxes_m
+        labels = labels_c + labels_m + labels_map + health_labels_c + health_labels_m
 
         blacklist = [
             ((952, 1080), (456, 1268)),   # (y0, y1), (x0, x1)
@@ -1483,8 +1483,6 @@ def generate_synthetic_ds(img_dir: str,
 
         boxes, labels = filtered_boxes, filtered_labels
 
-
-
         # minimap = generate_random_minimap()
         # plt.imshow(minimap)
         # plt.show()
@@ -1503,18 +1501,107 @@ def generate_synthetic_ds(img_dir: str,
                 icon_uint8 = (icon * 255).astype(np.uint8)
                 map_img[-320:-256, -256+64*j - 1:-256+64*j+64 - 1, :] = icon_uint8
 
+        img_name = f'map_{i:04d}.jpg'
+        img_path = os.path.join(output_dir, split, img_name)
+        cv2.imwrite(img_path, map_img)
 
-        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        plot_image_with_boxes(map_img, boxes, labels, output_dir, split, i)
-        img_name = f'{output_dir}/{split}/map_{i:04d}.jpg'
-        # add_to_coco(coco_dict, rf_categories, boxes, labels, map_img.shape[1], map_img.shape[0], img_name)
-        # cv2.imwrite(f'{output_dir}/{split}/map_{i:04d}.jpg', map_img)
-        plot_image_with_boxes(
-            map_img, boxes, labels, 
-            output_dir, split, count = i
+        # plot_image_with_boxes(
+        #     map_img, health_boxes_c + health_boxes_m, health_labels_c + health_labels_m, output_dir=output_dir, split=split, count = i
+        # )
+
+        return {
+            "filename": img_name,
+            "width": map_img.shape[1],
+            "height": map_img.shape[0],
+            "boxes": boxes,
+            "labels": labels
+        }
+    
+    except Exception as e:
+        print(f"[Warning] iteration {i} failed: {e!r}")
+        return None
+
+def generate_synthetic_ds_parallel(img_dir: str, 
+    split: str, 
+    fx_folder: str, 
+    hud_folder: str,
+    icons_folder: str,
+    annotation_path: str,
+    font_path: str,
+    output_dir: str, 
+    champs_to_exclude: set = None, 
+    rf_categories: list[dict] = None,
+    images_per_unit: int = 500):
+
+    with open(annotation_path, 'r') as f:
+        annotations = json.load(f)
+    rf_categories = annotations['categories']
+
+    coco_dict = create_coco_dict(rf_categories)
+
+    # Load image paths
+    img_dir = os.path.join(img_dir, split)
+    all_files = os.listdir(img_dir)
+    all_imgs = [img for img in all_files if img.endswith('.jpg')]
+    map_imgs = [os.path.join(img_dir, img) for img in all_imgs if img.startswith('map_frame_')]
+    # Separate by role
+    champ_imgs = []
+    champ_names = set()
+    for img in all_imgs:
+        if not img.startswith(('red-','blue-', 'map_frame_')):
+            if '-' in img:
+                champ_name = img[:img.find('-')]
+            else:
+                champ_name = img[:img.find('_')]
+            if champ_name in WEIRD_NAMES:
+                champ_name = WEIRD_NAMES[champ_name]
+            if champ_name not in champs_to_exclude:                
+                champ_imgs.append(os.path.join(img_dir, img))
+                champ_names.add(champ_name)
+
+    minion_imgs = [os.path.join(img_dir, img)
+                for img in all_imgs if img.startswith(('red-','blue-'))]
+    
+    minion_imgs_dict = {}
+    for img in minion_imgs:
+        if 'caster' in img:
+            minion_imgs_dict.setdefault('caster', []).append(img)
+        elif 'melee' in img:
+            minion_imgs_dict.setdefault('melee', []).append(img)
+        elif 'cannon' in img:
+            minion_imgs_dict.setdefault('cannon', []).append(img)
+        elif 'siege' in img:
+            minion_imgs_dict.setdefault('siege', []).append(img)
+
+    results = Parallel(n_jobs=-1, backend='loky', verbose=10)(
+        delayed(generate_single_image)(
+            i,
+            split,
+            champ_imgs,
+            champ_names,
+            minion_imgs_dict,
+            map_imgs,
+            fx_folder,
+            hud_folder,
+            icons_folder,
+            font_path,
+            output_dir,
+            annotation_path,
+        )
+        for i in range(images_per_unit * (NUM_CHAMPS + NUM_MINIONS - len(champs_to_exclude)))
+    )
+
+    for result in results:
+        if result is None:
+            continue
+
+        add_to_coco(
+            coco_dict, rf_categories, 
+            result["boxes"], result["labels"],
+            result["width"], result["height"], 
+            result["filename"]
         )
 
-    # Save coco json file
     with open(os.path.join(output_dir, split, 'annotations.json'), 'w') as f:
         json.dump(coco_dict, f, indent=4)
 
@@ -1522,13 +1609,13 @@ def main():
     import argparse
     parser = argparse.ArgumentParser(description="Generate synthetic dataset for League of Legends.")
     parser.add_argument("--dataset_dir", type=str, default="../greenscreends/")
-    parser.add_argument("--split", type=str, choices=["train", "val"], default="train",
+    parser.add_argument("--split", type=str, choices=["train", "valid"], default="train",
                         help="Split to generate (train or val).")
     parser.add_argument("--fx_folder", type=str, default="../fx",
                         help="Folder containing FX images.")
     parser.add_argument("--hud_folder", type=str, default="../sample_hud",
-                        help="Folder containing HUG images.")
-    parser.add_argument("--icons_folder", type=str, default="league_icons",
+                        help="Folder containing HUD images.")
+    parser.add_argument("--icons_folder", type=str, default="../league_icons",
                     help="Folder containing league icons.")
     parser.add_argument("--font_path", type=str, default="../BeaufortForLoL-OTF/BeaufortforLOL-Bold.otf",
                         help="Path to the font file for health bars.")
@@ -1541,9 +1628,12 @@ def main():
     args = parser.parse_args()
     # Ensure output directory exists
     if not os.path.exists(args.output_dir):
+        print("Creating output directory:", args.output_dir)
         os.makedirs(args.output_dir)
-        if args.split:
-            os.makedirs(os.path.join(args.output_dir, args.split))
+
+    if not os.path.exists(os.path.join(args.output_dir, args.split)):
+        print("Creating output directory for split:", args.split)
+        os.makedirs(os.path.join(args.output_dir, args.split))
 
     # Convert comma-separated string to set
     if args.champs_to_exclude:
@@ -1555,12 +1645,13 @@ def main():
                     excluded_champs.add(row[0].strip().lower())
 
     # Generate the synthetic dataset
-    generate_synthetic_ds(
+    generate_synthetic_ds_parallel(
         img_dir=args.dataset_dir,
         split=args.split,
         fx_folder=args.fx_folder,
         hud_folder=args.hud_folder,
         icons_folder=args.icons_folder,
+        annotation_path = os.path.join(args.dataset_dir, args.split, "_annotations.coco.json"), 
         font_path=args.font_path,
         output_dir=args.output_dir,
         champs_to_exclude=excluded_champs, 
