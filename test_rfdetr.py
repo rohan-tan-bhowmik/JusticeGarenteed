@@ -7,107 +7,87 @@ from rfdetr import RFDETRBase
 from classes import CLASSES
 import cv2
 import time
+from tqdm import tqdm  # <--- import tqdm
 
-def predict(model: RFDETRBase, image: Image.Image, threshold = 0.5) -> sv.Detections:
+def predict(model: RFDETRBase, image: Image.Image, threshold=0.5) -> sv.Detections:
     """
     Predict bounding boxes and labels for the given image using the RF-DETR model.
-    
-    :param model: RFDETRBase model instance
-    :param image: PIL Image to predict on
-    :return: Detections object containing bounding boxes and labels
     """
-    # Convert PIL Image to numpy array
     img_array = np.array(image)
-    
-    # Perform prediction
     detections = model.predict(img_array, threshold=threshold)
-    
     labels = [
         f"{CLASSES[class_id]} {confidence:.2f}"
-        for class_id, confidence
-        in zip(detections.class_id, detections.confidence)
+        for class_id, confidence in zip(detections.class_id, detections.confidence)
     ]
     return detections, labels
 
-def draw_detections(image: Image.Image, detections: sv.Detections, labels) -> Image.Image:
+def draw_detections(image: Image.Image, detections: sv.Detections, labels) -> np.ndarray:
     """
     Draw bounding boxes and labels on the image.
-    
-    :param image: PIL Image to draw on
-    :param detections: Detections object containing bounding boxes and labels
-    :return: Image with drawn detections
     """
-    # Convert PIL Image to numpy array for drawing
     img_array = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-    
-    # Draw detections on the image
     annotated_image = sv.BoxAnnotator().annotate(img_array, detections)
     annotated_image = sv.LabelAnnotator().annotate(annotated_image, detections, labels)
-
     return annotated_image
 
 def detect_for_dir(img_dir: str, model: RFDETRBase, threshold=0.5):
     """
-    Detect objects in all images in the specified directory using the RF-DETR model.
-    
-    :param img_dir: Directory containing images to process
-    :param model: RFDETRBase model instance
-    :param threshold: Confidence threshold for detections
+    Detect objects in all images in the specified directory, with a tqdm bar.
     """
     import os
     from glob import glob
 
     img_paths = glob(os.path.join(img_dir, "*.jpg"))
-    
-    for img_path in img_paths:
-        img = Image.open(img_path)
+    for img_path in tqdm(img_paths, desc="Processing images"):
+        img = Image.open(img_path).convert("RGB")
         detections, labels = predict(model, img, threshold)
         print(f"Detected {len(detections)} objects in {img_path}")
-        draw_detections(img, detections, labels)
+        _ = draw_detections(img, detections, labels)  # we ignore display here
 
 def detect_for_video(video_path: str, model: RFDETRBase, threshold=0.5, start_second=0):
     """
-    Detect objects in a video using the RF-DETR model, starting from a specified second.
-    
-    :param video_path: Path to the video file
-    :param model: RFDETRBase model instance
-    :param threshold: Confidence threshold for detections
-    :param start_second: The second from which to start processing the video
+    Detect objects in a video using the RF-DETR model, starting from a specified second,
+    and show a tqdm progress bar over frames.
     """
-    import cv2
-
     cap = cv2.VideoCapture(video_path)
-    
-    # Get the video's FPS and calculate the starting frame
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    if not cap.isOpened():
+        print(f"Error: could not open video {video_path}")
+        return
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     start_frame = int(start_second * fps)
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)  # Set the starting frame
-    
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+    # Compute how many frames remain from start_frame to end
+    frames_to_process = max(0, total_frames - start_frame)
+    pbar = tqdm(total=frames_to_process, desc="Video frames")
+
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-        
+
         img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        fuckgabe = time.time()
         detections, labels = predict(model, img, threshold)
         annotated_img = draw_detections(img, detections, labels)
-        
-        # Display the annotated frame
-        cv2.imshow("Detections", np.array(annotated_img))
-        
-        if cv2.waitKey(15) & 0xFF == ord('q'):
+
+        cv2.imshow("Detections", annotated_img)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
             break
-    
+
+        pbar.update(1)
+
+    pbar.close()
     cap.release()
     cv2.destroyAllWindows()
-    
+
 if __name__ == "__main__":
     # Load the model
-    weights_path = "checkpoints/checkpoint_best_total.pth"
-    img_dir_path = "test_images"
-    video_path = "replays/garen_gangplank.mp4"
+    weights_path = "champ_detection.pth"
+    video_path = "replays/1-full.mp4"
     model = RFDETRBase(pretrain_weights=weights_path)
-    # model = model.optimize_for_inference()
+    model.device = "cuda"
 
-    # detect_for_dir("test_images", model, threshold=0.5)
-    detect_for_video(video_path, model, threshold=0.5, start_second = 90)
+    detect_for_video(video_path, model, threshold=0.5, start_second=300)
