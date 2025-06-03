@@ -671,19 +671,19 @@ def generate_cutout(img_path, annotation_path, split, minion=False, make_transpa
     # box_dict[itochamp[champion_label]].append(champion_box)
     box_dict[itochamp[champion_label]] = [champion_box]
 
-    if random.random() < 0.2 and split == 'train':
-        if not minion:
-            # Pick one preset according to GLOW_PROBS:
-            chosen_preset = random.choices(GLOW_PRESETS, weights=GLOW_PROBS, k=1)[0]
-            scale_factor = random.random()
-            for key in chosen_preset:
-                if isinstance(chosen_preset[key], list):
-                    chosen_preset[key] = [int(x * scale_factor) for x in chosen_preset[key]]
-                elif isinstance(chosen_preset[key], (int, float)):
-                    chosen_preset[key] *= scale_factor
-            cutout = glow_augment(cutout, **chosen_preset)
-        else:
-            cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
+    # if random.random() < 0.2 and split == 'train':
+    #     if not minion:
+    #         # Pick one preset according to GLOW_PROBS:
+    #         chosen_preset = random.choices(GLOW_PRESETS, weights=GLOW_PROBS, k=1)[0]
+    #         scale_factor = random.random()
+    #         for key in chosen_preset:
+    #             if isinstance(chosen_preset[key], list):
+    #                 chosen_preset[key] = [int(x * scale_factor) for x in chosen_preset[key]]
+    #             elif isinstance(chosen_preset[key], (int, float)):
+    #                 chosen_preset[key] *= scale_factor
+    #         cutout = glow_augment(cutout, **chosen_preset)
+    #     else:
+    #         cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
 
     # Occasionally make cutout transparent to simulate hiding in bushes
     if random.random() < make_transparent_prob:
