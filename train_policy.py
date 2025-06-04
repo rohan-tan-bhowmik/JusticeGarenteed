@@ -11,6 +11,7 @@ from policy import GarenBCPolicy
 from tqdm import tqdm
 
 import argparse
+import wandb 
 
 # ── Assumes you already have:
 #    - GarenReplayEnv  (as defined above)
@@ -30,20 +31,35 @@ def train_bc_on_directory(
     lr: float = 1e-4,
     device: str = "cuda", 
     checkpoint_dir: str = None, 
-    resume_from: str = None
+    resume_from: str = None,
+    wandb_project: str = "garen_bc_training",
+    wandb_run_name: str = "default_run", 
+    logging_freq: int = 500
 ):
     """
     data_dir: directory containing many .pkl expert‐trajectory files.
     seq_len:  how many frames each training input uses (must match policy.seq_len).
     num_epochs: how many passes over all trajectories.
     """
-
+    wandb.init(
+        project=wandb_project,
+        name=wandb_run_name,
+        config={
+            "data_dir": data_dir,
+            "lr": lr,
+            "seq_len": seq_len,
+            "num_epochs": num_epochs,
+            "lr": lr,
+            "device": device
+        }
+    )
     # 1) Gather all .pkl files
     traj_files = [
         os.path.join(data_dir, fn)
         for fn in os.listdir(data_dir)
         if fn.endswith(".pkl")
     ]
+    
     assert len(traj_files) > 0, f"No .pkl files found in {data_dir}"
     
     # 2) Instantiate the environment and a dummy obs to get obs_dim
@@ -71,6 +87,8 @@ def train_bc_on_directory(
         optimizer.load_state_dict(ckpt["optim_state"])
         start_epoch = ckpt["epoch"]
         print(f"Resumed from checkpoint {resume_from}, starting at epoch {start_epoch+1}.")
+
+    global_step = 0  # counts total frames seen across all epochs
 
     # 4) Main training loop
     for epoch in range(num_epochs):
@@ -115,14 +133,29 @@ def train_bc_on_directory(
                 loss.backward()
                 optimizer.step()
 
-                epoch_loss += loss.item()
+                loss_val = loss.item()
+                epoch_loss += loss_val
                 count_steps += 1
+                global_step += 1
+
+                # 5.6) Per‐step logging to WandB
+                if global_step % logging_freq == 0:
+                    wandb.log({
+                        "step_loss": loss_val,
+                        "global_step": global_step,
+                        "epoch": epoch + 1
+                    }, step=global_step)
 
                 # 5) Move to next step
                 obs_seq = next_obs_seq
 
         avg_loss = epoch_loss / max(1, count_steps)
         print(f"Epoch {epoch+1} done, avg BC loss per frame = {avg_loss:.6f}")
+
+        wandb.log({
+            "epoch_avg_loss": avg_loss,
+            "epoch": epoch + 1
+        }, step=(epoch + 1))
 
         ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{epoch+1}.pth")
         torch.save({
@@ -141,7 +174,10 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run training on (e.g., 'cuda' or 'cpu').")
-    
+    parser.add_argument("--checkpoint_dir", type=str, default=None, help="Directory to save checkpoints.")
+    parser.add_argument("--resume_from", type=str, default=None, help="Path to a checkpoint to resume training from.")
+    parser.add_argument("--wandb_project", type=str, default="garen_bc_training", help="WandB project name for logging.")
+    parser.add_argument("--wandb_run_name", type=str, default="default_run", help="WandB run name for logging.")
     args = parser.parse_args()
     
     train_bc_on_directory(
@@ -149,7 +185,11 @@ def main():
         seq_len=args.seq_len,
         num_epochs=args.num_epochs,
         lr=args.lr,
-        device=args.device
+        device=args.device, 
+        checkpoint_dir=args.checkpoint_dir,
+        resume_from=args.resume_from,
+        wandb_project=args.wandb_project,
+        wandb_run_name=args.wandb_run_name
     )
 
 if __name__ == "__main__":
