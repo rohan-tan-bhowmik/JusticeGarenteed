@@ -24,13 +24,13 @@ class GarenReplayEnv(gym.Env):
             self.trajectory = pickle.load(f)
 
         # Each element in trajectory is a dict with 'state' and 'action' keys
-        self.n_steps = len(self.trajectory)
+        self.n_steps = len(self.trajectory['state'])
         self._idx = 0
         self.seq_len = seq_len
         self._buffer = deque(maxlen=seq_len)
 
         # Convert the first state to an observation to define observation_space
-        first_state = self.trajectory[0]['state']
+        first_state = self.trajectory['state'][0]  # Get the first state
         obs = self._dict_to_observation(first_state)
 
         # Define action_space just to match signature; agent actions are ignored in replay
@@ -46,7 +46,7 @@ class GarenReplayEnv(gym.Env):
         self._idx = 0
         self._buffer.clear()
 
-        first_state = self.trajectory[0]["state"]
+        first_state = self.trajectory["state"][0]
         first_obs_dict = self._dict_to_observation(first_state)
 
         # Fill the buffer with the same first_obs_dict repeated
@@ -65,8 +65,7 @@ class GarenReplayEnv(gym.Env):
           - done:    True if we have exhausted all frames
           - info:    {"expert_action": expert_action}
         """
-        record = self.trajectory[self._idx]
-        expert_action = record["action"]
+        expert_action = self.trajectory["action"][self._idx]
 
         # Advance index
         self._idx += 1
@@ -75,12 +74,12 @@ class GarenReplayEnv(gym.Env):
             done = True
             # When done, just return a “zero‐padded” list of obs_dicts
             # (Here we fill with one copy of the last valid obs, though you could also fill with zeros.)
-            last_obs = self._dict_to_observation(self.trajectory[-1]["state"])
+            last_obs = self._dict_to_observation(self.trajectory["state"][-1])
             zero_list = [last_obs.copy() for _ in range(self.seq_len)]
             return zero_list, 0.0, True, {"expert_action": expert_action}
 
         # Build the next single‐frame obs_dict
-        next_state = self.trajectory[self._idx]["state"]
+        next_state = self.trajectory["state"][self._idx]
         next_obs = self._dict_to_observation(next_state)
 
         # Push into buffer, pop oldest automatically
@@ -97,7 +96,6 @@ class GarenReplayEnv(gym.Env):
 
         Returns: flat array of features, minimap detections, champion detections, and minion detections.
         """
-
         frame = step_dict["frame"]
         x, y = step_dict.get("garen_pos", 0) # garen's position on the screen
         mini_x, mini_y = step_dict.get("minimap_x_ratio", 0.0), step_dict.get("minimap_y_ratio", 0) # garen's position on minimap
@@ -114,7 +112,7 @@ class GarenReplayEnv(gym.Env):
         r_cd = step_dict.get("r-cd", 0.0)
         d_cd = step_dict.get("d-cd", 0.0)
         f_cd = step_dict.get("f-cd", 0.0)
-        lanes = ["b1, b2, b3, b4, b5, r1, r2, r3, r4, r5"]
+        lanes = ["b1", "b2", "b3", "b4", "b5", "r1", "r2", "r3", "r4", "r5"]
         objective_names = ["towers", "grubs", "heralds-barons", "dragons", "kills"]
         kdas, cs, health_levels, levels, objectives, items = [], [], [], [], [], []
         for lane in lanes:

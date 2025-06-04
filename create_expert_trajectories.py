@@ -4,6 +4,7 @@ import csv
 import json
 from classes import CONDENSED_CHAMPIONS_TO_I, HEALTHBAR_CLASSES
 import os
+from tqdm import tqdm
 
 ITEMS = set(['b1-1', 'b1-2', 'b1-3', 'b1-4', 'b1-5', 'b1-6', 'b1-7',
  'r1-1', 'r1-2', 'r1-3', 'r1-4', 'r1-5', 'r1-6', 'r1-7',
@@ -43,7 +44,25 @@ def convert_row_dict(row_dict, item_dict):
     action_dict = {}
     
     for key, item in row_dict.items():
-        if item == '' or item == '0':
+        if key == "move_dir":
+            if item == "STOPPED":
+                action_dict[key] = N_DIRS   # an integer in [0..N_DIRS]
+            else:
+                action_dict[key] = MOVEMENT_MAPPING.get(int(item), N_DIRS)
+
+        if key == "target":
+            if item == 'NONE':
+                action_dict[key]   = 0
+                action_dict["x"]   = None
+                action_dict["y"]   = None
+            else:
+                action_dict[key]   = 1
+                _, x_str, y_str = item.split(',')  # or however you parse it
+                action_dict["x"]  = float(x_str)
+                action_dict["y"]  = float(y_str)
+            continue
+
+        elif item == '' or item == '0':
             if key in ITEMS:
                 state_dict[key] = len(item_dict) # Use the length of item_dict as a placeholder for no item
             elif key not in 'minions towers minimap champions':
@@ -51,7 +70,7 @@ def convert_row_dict(row_dict, item_dict):
             else:
                 state_dict[key] = np.zeros((0, 5), dtype=np.float32)
         elif key == "frame":
-            state_dict[key] = int(item)
+            state_dict[key] = int(float(item))
         elif 'kda' in key:
             kda = item.split('/')
             state_dict[key] = kda
@@ -78,12 +97,10 @@ def convert_row_dict(row_dict, item_dict):
             detections = np.array(rows, dtype=np.float32)
             state_dict[key] = detections
 
-        elif key == "move_dir":
-            if item == "STOPPED":
-                action_dict[key] = N_DIRS   # an integer in [0..N_DIRS]
-            else:
-                action_dict[key] = MOVEMENT_MAPPING.get(int(item), N_DIRS)
-
+        
+        elif key in ['q-cd', 'w-cd',	'e-cd', 'r-cd',	'd-cd', 'f-cd']:
+            if item == "not learned":
+                state_dict[key] = 0
         elif key == "champions":
             rows = []  # Python list of [class_id, x_ratio, y_ratio, health, color]
             detected_champions = set()
@@ -129,17 +146,6 @@ def convert_row_dict(row_dict, item_dict):
             
             state_dict[key] = detections
 
-        elif key == "target":
-            if item == 'NONE':
-                action_dict[key] = 0 # binary flag for no target
-                action_dict["x"] = None
-                action_dict["y"] = None
-            else:
-                action_dict[key] = 1
-                x, y = item.split(',')[1:]
-                action_dict["x"] = float(x)
-                action_dict["y"] = float(y)
-    print(state_dict)
     return state_dict, action_dict
 
 def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rate=3):
@@ -180,7 +186,6 @@ def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rat
 
         # Process the first movement-row, then loop over the rest
         for i, row_dict in enumerate([first_row] + list(reader)):
-            frame = int(row_dict["frame"])
             # Merge row_dict + ocr_ dict into a fresh dict
             # Note: ocr_dict is {"<ocr_frame>": {..fields..}}, 
             # so we need its inner dict, not the key.
@@ -188,14 +193,13 @@ def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rat
 
             merged = row_dict.copy()
             merged.update(ocr_fields)
-            merged["frame"] = frame
             state_dict, action_dict = convert_row_dict(merged, item_dict)
             ability_actions = [0, 0, 0, 0, 0, 0]
             all_states.append(state_dict)
             if i > 0:
                 prev_state = all_states[i - 1]
                 for i, cd_key in enumerate(['q-cd', 'w-cd',	'e-cd', 'r-cd',	'd-cd', 'f-cd']):
-                    if merged[cd_key] != 0 and prev_state[cd_key] == 0: # ability was used (thus, cooldown is nonzero at current step)
+                    if merged[cd_key] != 0 and prev_state[cd_key] == 0 and merged[cd_key] != "not learned": # ability was used (thus, cooldown is nonzero at current step)
                         ability_actions[i] = 1
 
             action_dict["abilities"] = ability_actions
@@ -218,10 +222,9 @@ def save_trajectories(ocr_data_dir, movement_data_dir, output_path):
 
     assert len(ocr_csvs) == len(movement_csvs)
 
-    for ocr_csv, movement_csv in zip(ocr_csvs, movement_csvs):
+    for ocr_csv, movement_csv in tqdm(zip(ocr_csvs, movement_csvs)):
         ocr_path = os.path.join(ocr_data_dir, ocr_csv)
         movement_path = os.path.join(movement_data_dir, movement_csv)
-
         data = parse_csvs(ocr_path, movement_path)
         output_file = os.path.join(output_path, f"{ocr_csv[:-4]}.pkl")
 
@@ -230,3 +233,20 @@ def save_trajectories(ocr_data_dir, movement_data_dir, output_path):
 
         print(f"Saved trajectory to {output_file}")
 
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Process and save expert trajectories.")
+    parser.add_argument("--ocr_data_dir", type=str, required=True, help="Directory containing OCR CSV files.")
+    parser.add_argument("--movement_data_dir", type=str, required=True, help="Directory containing movement CSV files.")
+    parser.add_argument("--output_path", type=str, required=True, help="Directory to save the output pickle files.")
+
+    args = parser.parse_args()
+
+    if not os.path.exists(args.output_path):
+        os.makedirs(args.output_path)
+
+    save_trajectories(args.ocr_data_dir, args.movement_data_dir, args.output_path)
+
+if __name__ == "__main__":
+    main()

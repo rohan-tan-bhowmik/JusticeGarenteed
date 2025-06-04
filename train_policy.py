@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.optim import Adam, AdamW
 from LolGarenEnv import GarenReplayEnv
 from policy import GarenBCPolicy
+from tqdm import tqdm
 
 import argparse
 
@@ -27,7 +28,9 @@ def train_bc_on_directory(
     seq_len: int = 9,
     num_epochs: int = 5,
     lr: float = 1e-4,
-    device: str = "cuda"
+    device: str = "cuda", 
+    checkpoint_dir: str = None, 
+    resume_from: str = None
 ):
     """
     data_dir: directory containing many .pkl expert‐trajectory files.
@@ -42,7 +45,7 @@ def train_bc_on_directory(
         if fn.endswith(".pkl")
     ]
     assert len(traj_files) > 0, f"No .pkl files found in {data_dir}"
-
+    
     # 2) Instantiate the environment and a dummy obs to get obs_dim
     example_env = GarenReplayEnv(traj_files[0], seq_len=seq_len)
     # We can grab one obs_seq via reset() to see what "frame" looks like.
@@ -53,10 +56,21 @@ def train_bc_on_directory(
     # Our policy’s constructor already knows how to handle embedding, so we just trust it.
 
     # 3) Instantiate policy
-    policy = GarenBCPolicy().to(device)
+    policy = GarenBCPolicy(device = device).to(device)
     policy.to(device)
 
     optimizer = AdamW(policy.parameters(), lr=lr)
+
+    if checkpoint_dir is not None:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+    if resume_from is not None:
+        # Load checkpoint before training
+        ckpt = torch.load(resume_from, map_location=device)
+        policy.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optim_state"])
+        start_epoch = ckpt["epoch"]
+        print(f"Resumed from checkpoint {resume_from}, starting at epoch {start_epoch+1}.")
 
     # 4) Main training loop
     for epoch in range(num_epochs):
@@ -110,11 +124,19 @@ def train_bc_on_directory(
         avg_loss = epoch_loss / max(1, count_steps)
         print(f"Epoch {epoch+1} done, avg BC loss per frame = {avg_loss:.6f}")
 
+        ckpt_path = os.path.join(checkpoint_dir, f"checkpoint_{epoch+1}.pth")
+        torch.save({
+            "epoch": epoch + 1,
+            "model_state": policy.state_dict(),
+            "optim_state": optimizer.state_dict()
+        }, ckpt_path)
+        print(f"Saved checkpoint: {ckpt_path}\n")
+
     print("Training complete.")
 
 def main():
     parser = argparse.ArgumentParser(description="Train a BC policy on Garen replay data.")
-    parser.add_argument("data_dir", type=str, help="Directory containing .pkl expert trajectory files.")
+    parser.add_argument("--data_dir", type=str, help="Directory containing .pkl expert trajectory files.")
     parser.add_argument("--seq_len", type=int, default=9, help="Length of input sequence for the policy.")
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
@@ -129,3 +151,6 @@ def main():
         lr=args.lr,
         device=args.device
     )
+
+if __name__ == "__main__":
+    main()
