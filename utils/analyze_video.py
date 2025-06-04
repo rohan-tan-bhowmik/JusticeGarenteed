@@ -134,33 +134,51 @@ def bar_fill(rgb: np.ndarray, thresh: int = 60) -> float:
     gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
     return float((gray > thresh).mean() * 100)
 
-def parse_boxes(file: str = BOX_FILE) -> Dict[str, ROIType]:
+def parse_boxes(file: str = BOX_FILE) -> tuple[dict[str, ROIType], dict[str, list[float]]]:
+    """
+    Returns:
+      - rois:       { category → (y‐slice, x‐slice, kind) }
+      - cooldown_map: { category → [cd_at_rank0, cd_at_rank1, ..., cd_at_rankN] }
+    """
     pat = re.compile(r"\[(\d+):(\d+),\s*(\d+):(\d+)\]")
     rois: dict[str, ROIType] = {}
-    cooldown_map: dict[str, float] = {}
+    cooldown_map: dict[str, list[float]] = {}
+
     with open(file, encoding="utf-8") as fh:
         for line in fh:
             line = line.split("#")[0].strip()
             if not line:
                 continue
+
             cat, rng, kind_str = [p.strip() for p in line.split(";", 2)]
             m = pat.search(rng)
             if not m:
                 continue
 
             y0, y1, x0, x1 = map(int, m.groups())
-            # handle “cooldown – N” specially
             kind_lower = kind_str.lower()
+
             if kind_lower.startswith("cooldown"):
-                # expect format “cooldown - 8”
-                _, cd_sec = kind_lower.split("-", 1)
-                cooldown_map[cat] = float(cd_sec.strip())
+                # Expect format "cooldown - 0/8/8/8/8/8"
+                # Split off the dash:
+                parts = kind_lower.split("-", 1)
+                if len(parts) == 2:
+                    cd_values = parts[1].strip()  # e.g. "0/8/8/8/8/8"
+                    # Convert "0/8/8/8/8/8" → [0.0, 8.0, 8.0, 8.0, 8.0, 8.0]
+                    cd_list = [float(x) for x in cd_values.split("/") if x != ""]
+                else:
+                    cd_list = [0.0]
+
+                # Store the list for this category
+                cooldown_map[cat] = cd_list
                 kind = "cooldown"
             else:
-                kind = kind_lower
+                kind = kind_lower  # "text", "bar", "images", "minimap", etc.
 
             rois[cat] = (slice(y0, y1), slice(x0, x1), kind)
+
     return rois, cooldown_map
+
 
 def show_test_frame(video_path: pathlib.Path, frame_idx: int):
     """Load a single frame and display all 'text' ROIs via matplotlib."""
@@ -208,10 +226,41 @@ def is_colored(roi_rgb: np.ndarray, sat_thresh: float = 15.0) -> bool:
     # mean saturation channel
     return float(hsv[...,1].mean()) > sat_thresh
 
+# skill_order is something like ["Q","W","E","Q","Q","R", …] (length 15)
+def get_ability_ranks(skill_order: list[str], garen_level: int):
+    """
+    Given:
+      - skill_order: list of length 15, where skill_order[i] ∈ {"Q","W","E","R"} 
+                     is the ability Garen took at champion level (i+1).
+      - garen_level: current champion level (1 through 18).
+
+    Return a dict mapping:
+      "Q" → number of points in Q
+      "W" → number of points in W
+      "E" → number of points in E
+      "R" → number of points in R
+    """
+    # We only care about the first `garen_level` entries (for levels 1 up to garen_level).
+    # If garen_level > 15, any extra levels must be ult (R).
+    # So slice up to min(garen_level, len(skill_order)):
+    slice_end = min(garen_level, len(skill_order))
+    taken = skill_order[:slice_end]
+
+    return {
+        "Q": taken.count("Q"),
+        "W": taken.count("W"),
+        "E": taken.count("E"),
+        "R": taken.count("R")
+    }
+
 def analyze_video(path: pathlib.Path,
                   frame_interval: int = 30,
                   csv_path: str | None = None,
-                  start_frame: int = 0):
+                  start_frame: int = 0,
+                  items_by_champ = None,
+                  skill_order = None,
+                  whitelist_ids = None,
+                  replay = None):
     boxes, cooldown_map = parse_boxes()
     cooldown_start: dict[str, int | None] = {cat: None for cat in cooldown_map}
 
@@ -247,226 +296,32 @@ def analyze_video(path: pathlib.Path,
 
     load_and_cache_item_icons(ITEM_SIZE)
 
-    MINIMAP_INTERVAL_SECONDS = 5.0
-    MINIMAP_INTERVAL_FRAMES = int(MINIMAP_INTERVAL_SECONDS * fps)
-    last_minimap_frame = start_frame - MINIMAP_INTERVAL_FRAMES
-
-    with tqdm(total=total_frames, desc="Processing frames") as pbar:
-        while True:
-            ret, frame_bgr = cap.read()
-            if not ret:
-                break
-            if frame_idx % frame_interval == 0:
-                if USE_CV2_CUDA:
-                    gpu_mat = cv2.cuda_GpuMat()
-                    gpu_mat.upload(frame_bgr)
-                    frame = cv2.cuda.cvtColor(gpu_mat, cv2.COLOR_BGR2RGB).download()
-                else:
-                    frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
-                row_data = {"frame": frame_idx}
-
-                # first pass: queue OCR tasks for changed text ROIs
-                for cat, (rs, cs, kind) in boxes.items():
-                    roi = frame[rs, cs]
-                    changed = cat not in last_rois or not np.array_equal(last_rois[cat], roi)
-                    if kind == "text" and changed:
-                        key = f"{frame_idx}:{cat}"
-                        ocr_text(roi, key)
-
-                ocr_queue.join()
-
-                # second pass: compute values or reuse last
-                for cat, (rs, cs, kind) in boxes.items():
-                    roi = frame[rs, cs]
-                    changed = cat not in last_rois or not np.array_equal(last_rois[cat], roi)
-
-                    if not changed:
-                        val = last_values[cat]
-                    else:
-                        if kind == "text":
-                            key = f"{frame_idx}:{cat}"
-                            val = ocr_results.pop(key, last_values.get(cat, ""))
-                        elif kind == "bar":
-                            val = bar_fill(roi)
-                        elif kind == "images":
-                            # Check uniform color first:
-                            gray_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-                            if gray_roi.std() < 5:     # essentially constant
-                                val = ""
-                            else:
-                                # match_item uses icon_gray_dict directly
-                                best_name, _ = match_item(roi)
-                                val = "" if best_name is None else best_name
-
-                        elif kind == "minimap":
-                            # only do a new detection if at least MINIMAP_INTERVAL_FRAMES have elapsed
-                            if (frame_idx - last_minimap_frame) >= MINIMAP_INTERVAL_FRAMES:
-                                minimap_crop = roi
-                                results = detect_whitelist_only(
-                                    minimap_crop,
-                                    model,
-                                    device,
-                                    whitelist_ids=whitelist_ids,
-                                    score_thresh=0.5
-                                )
-                                if not results:
-                                    val = ""
-                                else:
-                                    val = "|".join(f"{nm}:{x:.3f},{y:.3f}:{s:.2f}"
-                                                for nm, x, y, s in results)
-
-                                # update our “last seen” for the minimap‐ROI so future frames within the interval reuse it
-                                last_minimap_frame = frame_idx
-                                last_rois[cat]   = minimap_crop.copy()
-                                last_values[cat] = val
-                            else:
-                                # we are still within the 5‐second window: reuse whatever we had last time
-                                val = last_values.get(cat, "")
-
-
-                        elif kind == "cooldown":
-                            SAT_THRESH = 80
-                            VAL_THRESH = 40
-                            max_cd = cooldown_map[cat]            # seconds
-                            # ability is available → cancel any running countdown
-                            hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
-                            # mean_sat = hsv[..., 1].mean()
-                            any_saturated = np.any(hsv[...,1] > SAT_THRESH)
-                            pixel_y, pixel_x = 1, 14  # Relative to the cropped cooldown ROI
-                            pixel_val = hsv[pixel_y, pixel_x][2] if pixel_y < hsv.shape[0] and pixel_x < hsv.shape[1] else 0
-                            # plt.imshow(roi)
-                            # plt.show()
-
-                            if any_saturated:
-                                # Overall still colored → available
-                                cooldown_start[cat] = None
-                                val = ""
-                            elif pixel_val > VAL_THRESH and cooldown_start[cat] is None and cat == 'q-cd':
-                                # Region desaturated, but this pixel still colored → still active
-                                cooldown_start[cat] = None
-                                val = "enabled"
-                                # val = pixel_val
-                            else:
-                                # Fully unsaturated and pixel also desaturated → start/continue cooldown
-                                if cooldown_start[cat] is None:
-                                    cooldown_start[cat] = frame_idx
-                                elapsed = (frame_idx - cooldown_start[cat]) / fps
-                                remaining = cooldown_map[cat] - elapsed
-                                val = f"{remaining:.1f}" if remaining > 0 else "0.0"
-
-                        else:
-                            # fallback for text, bar, images, etc.
-                            val = '…'
-
-                        last_rois[cat] = roi.copy()
-                        last_results[cat] = f"{cat}→{val}"
-                        last_values[cat] = val
-
-                    row_data[cat] = val
-
-                # helper to round values for CSV
-                def round_to_sigfigs(value, sigfigs=3):
-                    try:
-                        num = float(value)
-                        if num == 0:
-                            return "0"
-                        digits = sigfigs - int(np.floor(np.log10(abs(num)))) - 1
-                        return str(round(num, digits))
-                    except (ValueError, TypeError):
-                        return value
-
-                def process_row(row):
-                    def process_val(v):
-                        if isinstance(v, str) and ':' in v:
-                            segments = v.split('|')
-                            new_segments = []
-                            for segment in segments:
-                                parts = segment.split(':')
-                                if len(parts) >= 3 and parts[2].replace('.', '', 1).isdigit():
-                                    parts[2] = round_to_sigfigs(parts[2])
-                                new_segments.append(':'.join(parts))
-                            return '|'.join(new_segments)
-                        return round_to_sigfigs(v)
-                    return {k: process_val(v) for k, v in row.items()}
-
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4))
-    axes[0].imshow(frame_rgb)
-    axes[0].set_title(f"Frame {frame_idx}")
-    axes[0].axis('off')
-
-    for i, (cat, roi) in enumerate(text_rois, start=1):
-        # — preprocess as before —
-        gray     = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-        resized  = cv2.resize(gray, (0, 0), fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
-        cleaned  = cv2.GaussianBlur(resized, (3, 3), 0)
-
-        axes[i].imshow(cleaned, cmap='gray')
-        axes[i].set_title(cat)
-        axes[i].axis('off')
-
-
-
-    plt.tight_layout()
-    plt.show()
-    sys.exit(0)
-
-def is_colored(roi_rgb: np.ndarray, sat_thresh: float = 15.0) -> bool:
-    """Return True if ROI has enough color saturation."""
-    hsv = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2HSV)
-    # mean saturation channel
-    return float(hsv[...,1].mean()) > sat_thresh
-
-def analyze_video(path: pathlib.Path,
-                  frame_interval: int = 30,
-                  csv_path: str | None = None,
-                  start_frame: int = 0):
-    boxes, cooldown_map = parse_boxes()
-    cooldown_start: dict[str, int | None] = {cat: None for cat in cooldown_map}
-
-    levels_path = Path(path).parent / replay["level-stats"]
-    with open(levels_path, "r", encoding="utf-8") as f:
-        levels_by_slot = json.load(f)
-
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        raise IOError(f"Cannot open {path}")
-
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS)
-
-    device = torch.device("cuda" if USE_TORCH_CUDA else "cpu")
-    model = minimap.create_model(171, device=device)
-    model.load_state_dict(torch.load("minimap_model.pt", map_location=device))
-    model.to(device).eval()
-
-    last_rois, last_results, last_values = {}, {}, {}
-    frame_idx = start_frame
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-
-    csv_file = open(csv_path, 'w', newline='', encoding='utf-8') if csv_path else None
-
-    all_fields = ["frame"] + [cat for cat in boxes] + [
-        "b1-level","b2-level","b3-level","b4-level","b5-level",
-        "r1-level","r2-level","r3-level","r4-level","r5-level"
-    ]
-    writer = csv.DictWriter(csv_file, fieldnames=all_fields) if csv_file else None
-    if writer:
-        writer.writeheader()
-
-    load_and_cache_item_icons(ITEM_SIZE)
+    ability_haste = 0.0
 
     MINIMAP_INTERVAL_SECONDS = 5.0
     MINIMAP_INTERVAL_FRAMES = int(MINIMAP_INTERVAL_SECONDS * fps)
     last_minimap_frame = start_frame - MINIMAP_INTERVAL_FRAMES
 
+    # replay["blue_team"] = ["Garen", …], replay["red_team"] = […]
+    if "Garen" in replay["blue_team"]:
+        side_prefix = "b"
+        slot_index = replay["blue_team"].index("Garen") + 1  # 1-based
+    elif "Garen" in replay["red_team"]:
+        side_prefix = "r"
+        slot_index = replay["red_team"].index("Garen") + 1
+    else:
+        raise RuntimeError("Garen not found on either team")
+
+    garen_slot_key = f"{side_prefix}{slot_index}-level"
+
+    ability_ranks = None
     with tqdm(total=total_frames, desc="Processing frames") as pbar:
         while True:
             ret, frame_bgr = cap.read()
             shitgabe = time.time()
             if not ret:
                 break
-            if frame_idx % frame_interval == 0:
+            if (frame_idx - start_frame) % frame_interval == 0:
                 if USE_CV2_CUDA:
                     gpu_mat = cv2.cuda_GpuMat()
                     gpu_mat.upload(frame_bgr)
@@ -474,12 +329,12 @@ def analyze_video(path: pathlib.Path,
                 else:
                     frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-                row_data = {"frame": frame_idx}
+                row_data = {"frame": frame_idx - start_frame}
 
                 # first pass: queue OCR tasks for changed text ROIs
                 for cat, (rs, cs, kind) in boxes.items():
-                    if kind != "cooldown":
-                        continue
+                    # if kind != "cooldown":
+                    #     continue
                     roi = frame[rs, cs]
                     changed = cat not in last_rois or not np.array_equal(last_rois[cat], roi)
                     if kind == "text" and changed:
@@ -490,9 +345,9 @@ def analyze_video(path: pathlib.Path,
 
                 # second pass: compute values or reuse last
                 for cat, (rs, cs, kind) in boxes.items():
-                    if kind != "cooldown":
-                        # continue
-                        pass
+                    # if kind != "cooldown":
+                    #     # continue
+                    #     pass
                     roi = frame[rs, cs]
                     changed = cat not in last_rois or not np.array_equal(last_rois[cat], roi)
 
@@ -502,17 +357,23 @@ def analyze_video(path: pathlib.Path,
                         if kind == "text":
                             key = f"{frame_idx}:{cat}"
                             val = ocr_results.pop(key, last_values.get(cat, ""))
+
                         elif kind == "bar":
                             val = bar_fill(roi)
                         elif kind == "images":
                             # Check uniform color first:
                             gray_roi = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
-                            if gray_roi.std() < 5:     # essentially constant
+                            if gray_roi.std() < 10:     # essentially constant
                                 val = ""
                             else:
                                 # match_item uses icon_gray_dict directly
                                 best_name, _ = match_item(roi)
                                 val = "" if best_name is None else best_name
+                                if garen_slot_key.split("-")[0] in cat:
+                                    items = (items_by_champ[val.split("_item")[0]])
+                                    if "error" not in items:
+                                        ability_haste += items["stats"].get("ability_haste", 0)
+
 
                         elif kind == "minimap":
                             # only do a new detection if at least MINIMAP_INTERVAL_FRAMES have elapsed
@@ -541,45 +402,69 @@ def analyze_video(path: pathlib.Path,
 
 
                         elif kind == "cooldown":
-                            SAT_THRESH = 80
-                            VAL_THRESH = 40
-                            max_cd = cooldown_map[cat]            # seconds
-                            # ability is available → cancel any running countdown
-                            hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
-                            # mean_sat = hsv[..., 1].mean()
-                            any_saturated = np.any(hsv[...,1] > SAT_THRESH)
-                            pixel_y, pixel_x = 1, 14  # Relative to the cropped cooldown ROI
-                            pixel_val = hsv[pixel_y, pixel_x][2] if pixel_y < hsv.shape[0] and pixel_x < hsv.shape[1] else 0
-                            # plt.imshow(roi)
-                            # plt.show()
-
-                            if any_saturated:
-                                if "q" in cat:
-                                    plt.imshow(hsv[...,1])
-                                    plt.show()
-                                # Overall still colored → available
-                                cooldown_start[cat] = None
-                                val = ""
-                            elif pixel_val > VAL_THRESH and cooldown_start[cat] is None and cat == 'q-cd':
-                                # Region desaturated, but this pixel still colored → still active
-                                # if "q" in cat:
-                                #     plt.imshow(roi)
-                                #     plt.show()
-                                # Overall still colored → availabl
-                                cooldown_start[cat] = None
-                                val = "enabled"
-                                # val = pixel_val
+                            # 1) Which ability is this? ("q-cd" → "Q", "w-cd" → "W", etc.)
+                            ability_key = cat.split("-")[0].upper()  # "q-cd" → "Q"
+                            
+                            # 2) What is Garen’s current rank in that ability?
+                            #    Suppose ability_ranks was computed earlier in the loop:
+                            #      ability_ranks = {"Q": q_rank, "W": w_rank, "E": e_rank, "R": r_rank}
+                            if ability_ranks is None:
+                                rank = 0
                             else:
-                                # if "q" in cat:
-                                #     plt.imshow(roi)
-                                #     plt.show()
-                                # Overall still colored → availabl
-                                # Fully unsaturated and pixel also desaturated → start/continue cooldown
-                                if cooldown_start[cat] is None:
-                                    cooldown_start[cat] = frame_idx
-                                elapsed = (frame_idx - cooldown_start[cat]) / fps
-                                remaining = cooldown_map[cat] - elapsed
-                                val = f"{remaining:.1f}" if remaining > 0 else "0.0"
+                                rank = ability_ranks.get(ability_key, 0)
+
+                            # 3) If rank = 0, ability is not learned → not available
+                            if "passive" not in cat and "d" not in cat[0] and "f" not in cat[0] and rank == 0:
+                                val = "not learned"
+                            else:
+                                # 4) Look up the proper “max cooldown” for this rank
+                                #    (e.g. cooldown_map["q-cd"][1] is Q’s CD at Q level 1)
+                                cd_list = cooldown_map.get(cat, [0.0])
+                                # guard against mis‐sized list:
+                                if rank < len(cd_list):
+                                    max_cd = cd_list[rank] * 100/(100+ability_haste)
+                                else:
+                                    max_cd = cd_list[-1]
+
+                                # 5) Now we reuse your old “desaturation → cooldown timer” logic,
+                                #    but comparing against max_cd (not a single constant).
+                                #    We detect full desaturation → start/continue cooldown.  
+                                hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+                                # Let’s measure grayscale‐ness via YCrCb distance:
+                                ycrcb = cv2.cvtColor(roi, cv2.COLOR_RGB2YCrCb)
+                                grayness = 1 - np.mean(
+                                    np.sqrt((ycrcb[...,1] - 128)**2 + (ycrcb[...,2] - 128)**2)
+                                ) / 128
+
+                                # Pick a single pixel in the ROI to check its “value” (V channel)
+                                pixel_y, pixel_x = 1, 14
+                                pixel_val = 0
+                                if pixel_y < hsv.shape[0] and pixel_x < hsv.shape[1]:
+                                    pixel_val = hsv[pixel_y, pixel_x][2]
+
+                                # a) If still “colored enough,” ability is ready:
+                                if grayness < 0.95:
+                                    cooldown_start[cat] = None
+                                    val = ""
+                                # b) If exactly threshold pixel is still bright but ROI is desaturated,
+                                #    we treat that as “just used,” so we show “enabled” for rank‐0→rank‐1 jump.
+                                elif pixel_val > 40 and grayness < 0.98 and cooldown_start[cat] is None and rank >= 1:
+                                    # print(grayness)
+                                    # plt.imshow(roi)
+                                    # plt.show()
+                                    cooldown_start[cat] = None
+                                    val = "enabled"
+                                else:
+                                    # c) Now the ability is on cooldown.
+                                    if cooldown_start[cat] is None:
+                                        cooldown_start[cat] = frame_idx
+                                    elapsed = (frame_idx - cooldown_start[cat]) / fps
+                                    remaining = max_cd - elapsed
+                                    val = f"{remaining:.1f}" if remaining > 0 else "0.0"
+
+                            last_rois[cat]   = roi.copy()
+                            last_results[cat] = f"{cat}→{val}"
+                            last_values[cat]  = val
 
                         else:
                             # fallback for text, bar, images, etc.
@@ -626,7 +511,7 @@ def analyze_video(path: pathlib.Path,
                 #     minute_idx = minutes  # floor‐minute
                 # except Exception:
                 #     # if parsing fails, default to minute 0
-                minute_idx = (frame_idx/30)//60
+                minute_idx = int((frame_idx/30)//60) + 1
 
                 # For each slot, look up the level at that minute
                 for side in ("b", "r"):
@@ -635,7 +520,13 @@ def analyze_video(path: pathlib.Path,
                         # levels_by_slot is the JSON loaded earlier
                         slot_levels = levels_by_slot.get(slot_key, {})
                         # use stringified minute_idx to fetch; default to 1 if missing
+                        # print(str(minute_idx+3), slot_levels.get(str(minute_idx+3)))
+                        if str(minute_idx) not in slot_levels.keys():
+                            minute_idx -= 1
                         row_data[slot_key] = slot_levels.get(str(minute_idx), 1)
+
+                ability_ranks = get_ability_ranks(skill_order, row_data[garen_slot_key])
+
                 # ────────────────────────────────────────────────────────────
 
                 if writer:
@@ -644,7 +535,9 @@ def analyze_video(path: pathlib.Path,
 
 
             frame_idx += 1
-            print(time.time() - shitgabe)
+            # print(time.time() - shitgabe)
+            # print(ability_haste)
+            ability_haste = 0
             pbar.update(1)
 
     cap.release()
@@ -768,12 +661,18 @@ if __name__ == "__main__":
     whitelist_names = blue_names | red_names
     whitelist_ids = { image_drawer.champion_to_id[name.lower()] for name in whitelist_names }
 
+    items_path = Path(replay_dir) / "item_data.json"     # replay["items"] is a relative path string
+    with open(items_path, "r", encoding="utf-8") as f:
+        items_by_champ = json.load(f)
 
     video_path = Path(replay_dir) / replay["stats_video"]
     start_frame = int(replay["start_frame_stats"])
     frame_interval = int(sys.argv[3]) if len(sys.argv) >= 4 and not sys.argv[3].startswith('--') else 30
     output_csv = None
     test_frame = None
+
+    skill_order = replay["skill_order"]
+
 
     # parse optional args
     for i, arg in enumerate(sys.argv[4:], start=4):
@@ -785,4 +684,4 @@ if __name__ == "__main__":
     if test_frame is not None:
         show_test_frame(video_path, test_frame)
     else:
-        analyze_video(video_path, frame_interval, output_csv, start_frame=start_frame)
+        analyze_video(video_path, frame_interval, output_csv, start_frame=start_frame,items_by_champ=items_by_champ,skill_order=skill_order,whitelist_ids=whitelist_ids,replay=replay)

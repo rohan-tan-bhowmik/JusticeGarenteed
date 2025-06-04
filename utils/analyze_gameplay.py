@@ -4,6 +4,7 @@ import argparse
 import os
 import csv
 from tqdm import tqdm
+from pathlib import Path
 
 import supervision as sv
 from PIL import Image
@@ -15,6 +16,7 @@ import math
 from collections import deque, defaultdict
 
 import time
+import json
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1) Classes and constants for detection/health‐bar matching
@@ -35,6 +37,15 @@ MINION_CLASSES = [
     "Red Caster",
     "Red Melee",
     "Red Siege"
+]
+
+TOWER_LABELS = [
+    'BlueInhibitor',
+    'BlueNexus',
+    'BlueTower',
+    'RedInhibitor',
+    'RedNexus',
+    'RedTower',
 ]
 
 CHAMPION_BODY_CLASSES = [
@@ -250,7 +261,7 @@ def find_camera_box_in_minimap(
     best_score = 0.0
     best_center = None
     template_base = np.zeros((full_h, full_w), dtype=np.uint8)
-    cv2.rectangle(template_base, (0, 0), (full_w - 1, full_h - 1), 255, 1)
+    # cv2.rectangle(template_base, (0, 0), (full_w - 1, full_h - 1), 255, 1)
 
     for scale_t in np.linspace(0.9, 1.1, 9):
         tw = max(3, int(round(full_w * scale_t)))
@@ -376,8 +387,8 @@ def direction_from_vector(mv: np.ndarray) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) Main: uses a 10‐frame “lookahead” buffer to compute HP loss in the future
 # ─────────────────────────────────────────────────────────────────────────────
-def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
-         weights: str, csv_path: str | None, start_frame: int):
+def main(replay_folder: str, game_name: str, scale: float, skip_n: int, wild_thresh: float,
+         weights: str, csv_path: str | None, start_frame: int, draw_annotations: bool = None):
     # Coordinates of the minimap ROI in the original frame:
     MM_Y1, MM_Y2 = 778, 1064
     MM_X1, MM_X2 = 1620, 1906
@@ -395,6 +406,19 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
     full_w = int(CB_W * scale)
     full_h = int(CB_H * scale)
 
+    meta_path = Path(replay_folder) / "metadata.json"
+    game_data = None
+    with open(meta_path, 'r', encoding='utf-8') as f:
+        meta = json.load(f)
+    for replay in meta["replays"]:
+        if replay["name"] == game_name:
+            game_data = replay
+    
+    if game_data is None:
+        raise ValueError(f"Game {game_name} not found")
+    
+    video_path = Path(replay_folder) / game_data["full_video"]
+        
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     total_iters = (max(0, total_frames - start_frame) + skip_n - 1) // skip_n
@@ -415,6 +439,11 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
     # Buffer to hold 10‐frame lookahead entries
     pending_frames = deque()  # each entry is a dict for one frame
 
+    last_champ_hp: dict[str, float] = {}   # maps key → last seen hp_pct
+    last_tower_hp: dict[str, float] = {}   # same for towers
+
+    champ_tracks: dict[str, dict] = {}  
+
     # Prepare CSV writer if requested
     csv_file = None
     writer = None
@@ -426,7 +455,8 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
             "move_dir",
             "target",
             "champions",  # pipe-separated list: label,cx,cy,hp_pct,team
-            "minions"    # same format
+            "minions",    # same format
+            "towers"
         ]
         writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
         writer.writeheader()
@@ -561,6 +591,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
 
             champion_data = []  # tuples: (label, cx, cy, hp_pct, team)
             minion_data   = []  # tuples: (label, mx, my, hp_pct, team)
+            tower_data = []
 
             if len(all_xywh) > 0:
                 all_xywh = np.array(all_xywh, dtype=np.int32)
@@ -598,7 +629,16 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                 ]
                 sp_champ_inds  = [
                     i for i, lbl in enumerate(sp_labels)
-                    if lbl in CHAMPION_BODY_CLASSES
+                    if lbl in CHAMPION_BODY_CLASSES and lbl not in TOWER_LABELS and (lbl in game_data["blue_team"] or lbl in game_data["red_team"])
+                ]
+                sp_tower_inds = [
+                    i for i, lbl in enumerate(sp_labels)
+                    if lbl in TOWER_LABELS
+                ]
+                hb_tower_inds = [
+                    i for i, lbl in enumerate(hb_labels)
+                    if lbl in ("BlueChampionHealthbar", "RedChampionHealthbar",
+                            "BlueMinionHealthbar", "RedMinionHealthbar")
                 ]
 
                 # (e) Match minion healthbars → minion bodies
@@ -636,52 +676,54 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                         ))
 
                         # Draw rectangles & line in GREEN for minions:
-                        cv2.rectangle(
-                            annotated,
-                            (x_hb, y_hb),
-                            (x_hb + w_hb, y_hb + h_hb),
-                            (0, 255, 0),  # green
-                            1
-                        )
-                        cv2.rectangle(
-                            annotated,
-                            (mx, my),
-                            (mx + mw, my + mh),
-                            (0, 255, 0),
-                            1
-                        )
-                        hb_center = (int(x_hb + w_hb/2), int(y_hb + h_hb/2))
-                        sp_center = (int(mx + mw/2), int(my + mh/2))
-                        cv2.line(
-                            annotated,
-                            hb_center,
-                            sp_center,
-                            (0, 255, 0),
-                            1
-                        )
-                        sx, sy, sw, sh = sp_box
-                        text = f"{int(pct)}%"
-                        color_text = (255, 255, 255) if bar_color == "blue" else (0, 0, 0)
-                        cv2.putText(
-                            annotated,
-                            text,
-                            (int(sx), int(sy) - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.4,
-                            color_text,
-                            1,
-                            cv2.LINE_AA
-                        )
+                        if draw_annotations:
+                            cv2.rectangle(
+                                annotated,
+                                (x_hb, y_hb),
+                                (x_hb + w_hb, y_hb + h_hb),
+                                (0, 255, 0),  # green
+                                1
+                            )
+                            cv2.rectangle(
+                                annotated,
+                                (mx, my),
+                                (mx + mw, my + mh),
+                                (0, 255, 0),
+                                1
+                            )
+                            hb_center = (int(x_hb + w_hb/2), int(y_hb + h_hb/2))
+                            sp_center = (int(mx + mw/2), int(my + mh/2))
+                            cv2.line(
+                                annotated,
+                                hb_center,
+                                sp_center,
+                                (0, 255, 0),
+                                1
+                            )
+                            sx, sy, sw, sh = sp_box
+                            text = f"{int(pct)}%"
+                            color_text = (255, 255, 255) if bar_color == "blue" else (0, 0, 0)
+                            cv2.putText(
+                                annotated,
+                                text,
+                                (int(sx), int(sy) - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.4,
+                                color_text,
+                                1,
+                                cv2.LINE_AA
+                            )
 
                 # (f) Match champion healthbars → champion bodies
                 if hb_champ_inds and sp_champ_inds:
                     hb_boxes_champ = hb_boxes[hb_champ_inds]
                     sp_boxes_champ = sp_boxes[sp_champ_inds]
-                    matches_champ, _, _ = get_matches(
+                    matches_champ, unmatched_hb_champs, unmatched_sp_champs = get_matches(
                         hb_boxes_champ,
                         sp_boxes_champ,
                         distance_threshold=200
                     )
+                    #  (1) Matched champions
                     for hb_idx0, sp_idx0 in matches_champ:
                         actual_hb_idx = hb_champ_inds[hb_idx0]
                         actual_sp_idx = sp_champ_inds[sp_idx0]
@@ -689,6 +731,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                         sp_box = sp_boxes[actual_sp_idx]
                         hb_label = hb_labels[actual_hb_idx]  # e.g. "RedChampionHealthbar"
                         champ_label = sp_labels[actual_sp_idx]
+
 
                         # Crop healthbar, compute %:
                         x_hb, y_hb, w_hb, h_hb = hb_box
@@ -700,6 +743,17 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                         cx, cy, cw, ch = sp_box
                         champ_center = (int(cx + cw/2), int(cy + ch/2))
                         team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+
+                        key = champ_label
+                        champ_tracks[key] = {
+                            "last_center": champ_center,   # exact pixel (cx, cy)
+                            "last_hp": pct
+                        }
+
+                        # Save last seen HP under a quantized key:
+                        key = f"Champion:{champ_label}:{champ_center[0]//10}:{champ_center[1]//10}"
+                        last_champ_hp[key] = pct
+
                         champion_data.append((
                             champ_label,
                             champ_center[0], champ_center[1],
@@ -707,42 +761,217 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                             team_color
                         ))
 
-                        cv2.rectangle(
-                            annotated,
-                            (x_hb, y_hb),
-                            (x_hb + w_hb, y_hb + h_hb),
-                            (255, 0, 0),  # blue
-                            1
-                        )
-                        cv2.rectangle(
-                            annotated,
-                            (cx, cy),
-                            (cx + cw, cy + ch),
-                            (255, 0, 0),
-                            1
-                        )
-                        hb_center = (int(x_hb + w_hb/2), int(y_hb + h_hb/2))
-                        sp_center = (int(cx + cw/2), int(cy + ch/2))
-                        cv2.line(
-                            annotated,
-                            hb_center,
-                            sp_center,
-                            (255, 0, 0),
-                            1
-                        )
-                        sx, sy, sw, sh = sp_box
-                        text = f"{int(pct)}%"
-                        color_text = (255, 255, 255) if bar_color == "blue" else (0, 0, 0)
-                        cv2.putText(
-                            annotated,
-                            text,
-                            (int(sx), int(sy) - 5),
-                            cv2.FONT_HERSHEY_SIMPLEX,
-                            0.5,
-                            color_text,
-                            1,
-                            cv2.LINE_AA
-                        )
+                        # (Optional) draw matched boxes:
+                        if draw_annotations:
+                            cv2.rectangle(
+                                annotated,
+                                (x_hb, y_hb),
+                                (x_hb + w_hb, y_hb + h_hb),
+                                (255, 0, 0),
+                                1
+                            )
+                            cv2.rectangle(
+                                annotated,
+                                (cx, cy),
+                                (cx + cw, cy + ch),
+                                (255, 0, 0),
+                                1
+                            )
+                            hb_center = (int(x_hb + w_hb/2), int(y_hb + h_hb/2))
+                            sp_center = (int(cx + cw/2), int(cy + ch/2))
+                            cv2.line(
+                                annotated,
+                                hb_center,
+                                sp_center,
+                                (255, 0, 0),
+                                1
+                            )
+                            sx, sy, sw, sh = sp_box
+                            text = f"{int(pct)}%"
+                            color_text = (255, 255, 255) if bar_color == "blue" else (0, 0, 0)
+                            cv2.putText(
+                                annotated,
+                                text,
+                                (int(sx), int(sy) - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                color_text,
+                                1,
+                                cv2.LINE_AA
+                            )
+
+                    # (2) Unmatched champion‐bars: place synthetic box 200 px below HB center,
+                    #     HP = last seen (or 100 if never seen), name = “UNKNOWN” if we cannot match.
+                    for hb_idx0 in unmatched_hb_champs:
+                        actual_hb_idx = hb_champ_inds[hb_idx0]
+                        hb_box = hb_boxes[actual_hb_idx]
+                        hb_label = hb_labels[actual_hb_idx]
+
+                        # HB center:
+                        x_hb, y_hb, w_hb, h_hb = hb_box
+                        hb_cx = x_hb + w_hb // 2
+                        hb_cy = y_hb + h_hb // 2
+
+                        # Try to “snap” this HB to any existing champion track
+                        best_match = None
+                        best_dist = float("inf")
+                        for champ_name, track in champ_tracks.items():
+                            cx_prev, cy_prev = track["last_center"]
+                            dist = math.hypot(hb_cx - cx_prev, hb_cy - cy_prev)
+                            # use a larger threshold so a fast‐moving champion still snaps
+                            if dist < 100.0 and dist < best_dist:
+                                best_match = champ_name
+                                best_dist = dist
+
+                        if best_match is not None:
+                            # Re‐use the exact last_center for this champion
+                            pct = champ_tracks[best_match]["last_hp"]
+                            team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+                            cx_prev, cy_prev = champ_tracks[best_match]["last_center"]
+                            champion_data.append((
+                                best_match,
+                                int(cx_prev), int(cy_prev),
+                                pct,
+                                team_color
+                            ))
+                            cv2.circle(annotated, (int(cx_prev), int(cy_prev)), 5, (128, 0, 128), thickness=1)
+
+                        else:
+                            # No existing track is “close enough,” remain UNKNOWN
+                            synth_cx = hb_cx
+                            synth_cy = hb_cy + 200
+                            key = f"Champion:UNKNOWN:{synth_cx//10}:{synth_cy//10}"
+                            pct = last_champ_hp.get(key, 100.0)
+                            team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+                            champion_data.append((
+                                "UNKNOWN",
+                                synth_cx, synth_cy,
+                                pct,
+                                team_color
+                            ))
+                            # draw synthetic box if desired
+
+                        
+                # (h) Match tower healthbars → tower bodies
+                if hb_tower_inds and sp_tower_inds:
+                    hb_boxes_tower = hb_boxes[hb_tower_inds]
+                    sp_boxes_tower = sp_boxes[sp_tower_inds]
+                    matches_tower, unmatched_hb_towers, unmatched_sp_towers = get_matches(
+                        hb_boxes_tower,
+                        sp_boxes_tower,
+                        distance_threshold=200
+                    )
+                    # (1) Matched towers
+                    for hb_idx0, sp_idx0 in matches_tower:
+                        actual_hb_idx = hb_tower_inds[hb_idx0]
+                        actual_sp_idx = sp_tower_inds[sp_idx0]
+                        hb_box = hb_boxes[actual_hb_idx]
+                        sp_box = sp_boxes[actual_sp_idx]
+                        hb_label = hb_labels[actual_hb_idx]    # e.g. “RedChampionHealthbar”
+                        tower_label = sp_labels[actual_sp_idx] # “RedTower” or “BlueTower”
+
+                        # Crop healthbar, compute %:
+                        x_hb, y_hb, w_hb, h_hb = hb_box
+                        crop_hb = frame[y_hb:y_hb+h_hb, x_hb:x_hb+w_hb]
+                        bar_color = "blue" if hb_label.startswith("Blue") else "red"
+                        pct = minion_health_percent(crop_hb, bar_color=bar_color)
+
+                        # Store tower’s “center” (bottom‐center of the sprite box)
+                        tx, ty, tw, th = sp_box
+                        tower_center = (int(tx + tw/2), int(ty + th/2))
+                        team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+
+                        # Save last seen HP under a quantized key:
+                        key = f"Tower:{tower_label}:{tower_center[0]//10}:{tower_center[1]//10}"
+                        last_tower_hp[key] = pct
+
+                        tower_data.append((
+                            tower_label,
+                            tower_center[0],
+                            tower_center[1],
+                            pct,
+                            team_color
+                        ))
+                        # (Optional) draw boxes:
+                        if draw_annotations:
+                            cv2.rectangle(
+                                annotated,
+                                (x_hb, y_hb),
+                                (x_hb + w_hb, y_hb + h_hb),
+                                (0, 255, 255), 1
+                            )
+                            cv2.rectangle(
+                                annotated,
+                                (tx, ty),
+                                (tx + tw, ty + th),
+                                (0, 255, 255), 1
+                            )
+                            hb_center = (int(x_hb + w_hb/2), int(y_hb + h_hb/2))
+                            sp_center = (int(tx + tw/2), int(ty + th/2))
+                            cv2.line(
+                                annotated,
+                                hb_center,
+                                sp_center,
+                                (0, 255, 255),
+                                1
+                            )
+                            color_text = (255, 255, 255) if bar_color == "blue" else (0, 0, 0)
+                            cv2.putText(
+                                annotated,
+                                f"{int(pct)}%",
+                                (int(tx), int(ty) - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.5,
+                                color_text,
+                                1,
+                                cv2.LINE_AA
+                            )
+
+                    # # (2) Unmatched tower‐bars: synthetic box 200 px below, HP from last seen or 100
+                    # for hb_idx0 in unmatched_hb_towers:
+                    #     actual_hb_idx = hb_tower_inds[hb_idx0]
+                    #     hb_box = hb_boxes[actual_hb_idx]
+                    #     hb_label = hb_labels[actual_hb_idx]
+                    #     # HB center:
+                    #     x_hb, y_hb, w_hb, h_hb = hb_box
+                    #     hb_cx = x_hb + w_hb//2
+                    #     hb_cy = y_hb + h_hb//2
+
+                    #     # Synthetic “tower” center 200 px below:
+                    #     synth_cx = hb_cx
+                    #     synth_cy = hb_cy + 200
+                    #     # Name “UNKNOWN_TOWER”
+                    #     tower_label = "UNKNOWN_TOWER"
+                    #     key = f"Tower:{tower_label}:{synth_cx//10}:{synth_cy//10}"
+                    #     pct = last_tower_hp.get(key, 100.0)
+                    #     team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+
+                    #     tower_data.append((
+                    #         tower_label,
+                    #         synth_cx, synth_cy,
+                    #         pct,
+                    #         team_color
+                    #     ))
+                    #     # (Optional) draw synthetic box:
+                    #     box_half = 20
+                    #     cv2.rectangle(
+                    #         annotated,
+                    #         (synth_cx - box_half, synth_cy - box_half),
+                    #         (synth_cx + box_half, synth_cy + box_half),
+                    #         (0, 128, 128),  # teal
+                    #         1
+                    #     )
+                    #     color_text = (255, 255, 255) if hb_label.startswith("Blue") else (0, 0, 0)
+                    #     cv2.putText(
+                    #         annotated,
+                    #         f"{int(pct)}%",
+                    #         (synth_cx - 20, synth_cy - box_half - 5),
+                    #         cv2.FONT_HERSHEY_SIMPLEX,
+                    #         0.5,
+                    #         color_text,
+                    #         1,
+                    #         cv2.LINE_AA
+                    #     )
 
             # ────────────────────────────────────────────────────────────────────
             # 2) Score each enemy’s HP right now (this frame) to buffer for lookahead
@@ -750,7 +979,10 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
             # Build future‐buffer entry: collect all “enemy” candidates at this frame
             # along with hp0 and a key.
             AGENT_NAME = "Garen"
-            AGENT_TEAM = "Blue"
+            if AGENT_NAME in game_data["blue_team"]:
+                AGENT_TEAM = "Blue"
+            else:
+                AGENT_TEAM = "Red"
 
             # First, locate Garen’s feet (bottom-center) at this frame
             agent_entry = None  # will be (agent_x, agent_y)
@@ -794,6 +1026,10 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                 f"{label},{mx},{my},{pct:.1f},{team}"
                 for (label, mx, my, pct, team) in minion_data
             )
+            tower_str = "|".join(
+                f"{label},{tx},{ty},{pct:.1f},{team}" 
+                for (label, tx, ty, pct, team) in tower_data
+            )
 
             #  • Build list of “enemy” candidates at this frame, with hp0 & key & bottom‐center
             enemy_candidates_at_frame = []
@@ -821,17 +1057,31 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                             key = f"Minion:{label}:{ex//10}:{ey//10}"
                             enemy_candidates_at_frame.append((label, ex, ey, hp_pct, key))
                             break
+            #   – Towers:
+            for (label, tx, ty, hp_pct, team) in tower_data:
+                if team != AGENT_TEAM:
+                    # find raw DETR bbox to get exact bottom‐center:
+                    for i, class_id in enumerate(detections.class_id):
+                        if CLASSES[int(class_id)] == label:
+                            xmin, ymin, xmax, ymax = detections.xyxy[i]
+                            ex = int((xmin + xmax) / 2)
+                            ey = int(ymax)
+                            key = f"Tower:{label}:{ex//10}:{ey//10}"
+                            enemy_candidates_at_frame.append((label, ex, ey, hp_pct, key))
+                            break
+
 
             #  • Record the last_mv (motion vector) at this frame
             mv_snapshot = mv.copy()
 
             #  • Build the record and append to pending_frames
             pending_frames.append({
-                "frame": idx,
+                "frame": idx - start_frame,
                 "minimap_ratio": minimap_center_ratio,
                 "move_dir": move_dir,
                 "champ_str": champ_str,
                 "minion_str": minion_str,
+                "tower_str": tower_str,
                 "agent_entry": agent_entry,
                 "last_mv": mv_snapshot,
                 "enemy_candidates": enemy_candidates_at_frame
@@ -847,6 +1097,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                 move_dir_old = old["move_dir"]
                 champ_str_old = old["champ_str"]
                 minion_str_old = old["minion_str"]
+                tower_str_old = old["tower_str"]
                 agent_x_old, agent_y_old = old["agent_entry"]
                 last_mv_old = old["last_mv"]
                 enemy_list_old = old["enemy_candidates"]
@@ -854,7 +1105,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                 # Build hp_future mapping from current frame
                 hp_future_map = {}
                 for (label, cx, cy, hp_pct, team) in champion_data:
-                    if team == "Red":  # only care about enemy HP
+                    if team != AGENT_TEAM:
                         key = f"Champion:{label}:{int(cx)//10}:{int(cy + (hp_pct*0)/100)//10}"  # cy approx bottom center? Instead, we search by any champion that matches key in enemy_list_old
                         # Actually use same key definition as above:
                         # We must recompute bottom‐center of this champion
@@ -868,7 +1119,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                                 break
 
                 for (label, mx, my, hp_pct, team) in minion_data:
-                    if team == "Red":
+                    if team != AGENT_TEAM:
                         for i, class_id in enumerate(detections.class_id):
                             if CLASSES[int(class_id)] == label:
                                 xmin, ymin, xmax, ymax = detections.xyxy[i]
@@ -878,6 +1129,18 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                                 hp_future_map[key_m] = hp_pct
                                 break
 
+                for (label, tx, ty, hp_pct, team) in tower_data:
+                    if team != AGENT_TEAM:
+                        # recompute bottom‐center exactly as above
+                        for i, class_id in enumerate(detections.class_id):
+                            if CLASSES[int(class_id)] == label:
+                                xmin, ymin, xmax, ymax = detections.xyxy[i]
+                                ex = int((xmin + xmax) / 2)
+                                ey = int(ymax)
+                                key_t = f"Tower:{label}:{ex//10}:{ey//10}"
+                                hp_future_map[key_t] = hp_pct
+                                break
+
                 # Now compute cost for each old enemy candidate
                 if not enemy_list_old or move_dir_old != "STOPPED":
                     target_str = "NONE"
@@ -885,6 +1148,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                     # Constants
                     WEIGHT_ANGLE = 1.0
                     WEIGHT_HP    = -2.0
+                    WEIGHT_DIST  =  0.02 
                     # Normalize old last_mv
                     if last_mv_old is None or (last_mv_old[0] == 0 and last_mv_old[1] == 0):
                         mv_unit_old = None
@@ -915,7 +1179,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                         hp_future = hp_future_map.get(key_o, 0.0)
                         hp_drop = max(0.0, hp0_o - hp_future)
 
-                        cost = WEIGHT_ANGLE * angle_diff + WEIGHT_HP * (-hp_drop)
+                        cost = WEIGHT_ANGLE * angle_diff + WEIGHT_HP * (-hp_drop) + WEIGHT_DIST  * dist_dir
                         if cost < best_score:
                             best_score = cost
                             best_entry = (label_o, ex_o, ey_o)
@@ -934,7 +1198,8 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                         "move_dir": move_dir_old,
                         "target": target_str,
                         "champions": champ_str_old,
-                        "minions": minion_str_old
+                        "minions": minion_str_old,
+                        "towers": tower_str_old
                     }
                     writer.writerow(row)
 
@@ -945,11 +1210,12 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
             # since targets correspond to old frames. If you want, you
             # could draw on the frame when computing the old target above.
 
-            print(time.time() - bitchgabe)
+            # print(time.time() - bitchgabe)
 
-            cv2.imshow("Detections + Motion + Minimap + Health + Stats", annotated)
-            if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
-                break
+            if draw_annotations:
+                cv2.imshow("Detections + Motion + Minimap + Health + Stats", annotated)
+                if cv2.waitKey(1) & 0xFF == 27:  # ESC to exit
+                    break
 
             prev = frame.copy()
             pbar.update(1)
@@ -962,6 +1228,7 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
             move_dir_old = old["move_dir"]
             champ_str_old = old["champ_str"]
             minion_str_old = old["minion_str"]
+            tower_str_old = old["tower_str"]
             # No lookahead → default to NONE
             target_str = "NONE"
             if writer:
@@ -972,7 +1239,8 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
                     "move_dir": move_dir_old,
                     "target": target_str,
                     "champions": champ_str_old,
-                    "minions": minion_str_old
+                    "minions": minion_str_old,
+                    "towers": tower_str_old
                 }
                 writer.writerow(row)
 
@@ -985,7 +1253,9 @@ def main(video_path: str, scale: float, skip_n: int, wild_thresh: float,
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("video", help="Path to League replay clip (e.g., .mp4)")
+    # parser.add_argument("video", help="Path to League replay clip (e.g., .mp4)")
+    parser.add_argument("--replay_folder", type=str)
+    parser.add_argument("--game", type=str)
     parser.add_argument("--scale", type=float, default=1.0,
                         help="Downscale factor for resolution (e.g., 0.5 = 50%)")
     parser.add_argument("--skip", type=int, default=1,
@@ -998,11 +1268,13 @@ if __name__ == "__main__":
                         help="Output CSV file path for saving stats")
     parser.add_argument("--start", type=int, default=0,
                         help="Zero‐based frame index at which to begin processing")
+    parser.add_argument("--draw", type=bool, default=False)
     args = parser.parse_args()
 
-    if not os.path.exists(args.video):
-        raise FileNotFoundError(f"Video file not found: {args.video}")
+    if not os.path.exists(args.replay_folder):
+        raise FileNotFoundError(f"Video file not found: {args.replay_folder}")
     if not os.path.exists(args.weights):
         raise FileNotFoundError(f"Weights file not found: {args.weights}")
+    
 
-    main(args.video, args.scale, args.skip, args.wild, args.weights, args.csv, args.start)
+    main(args.replay_folder, args.game, args.scale, args.skip, args.wild, args.weights, args.csv, args.start, args.draw)
