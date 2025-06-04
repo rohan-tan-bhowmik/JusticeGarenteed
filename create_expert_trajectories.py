@@ -69,6 +69,7 @@ def convert_row_dict(row_dict, item_dict):
                 state_dict[key] = 0
             else:
                 state_dict[key] = np.zeros((0, 5), dtype=np.float32)
+
         elif key == "frame":
             state_dict[key] = int(float(item))
         elif 'kda' in key:
@@ -100,7 +101,10 @@ def convert_row_dict(row_dict, item_dict):
         
         elif key in ['q-cd', 'w-cd',	'e-cd', 'r-cd',	'd-cd', 'f-cd']:
             if item == "not learned":
-                state_dict[key] = 0
+                state_dict[key] = -1.0
+            if item == "enabled":
+                state_dict[key] = 0.0
+
         elif key == "champions":
             rows = []  # Python list of [class_id, x_ratio, y_ratio, health, color]
             detected_champions = set()
