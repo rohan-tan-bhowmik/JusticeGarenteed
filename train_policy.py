@@ -190,6 +190,7 @@ def main():
         seq_len=args.seq_len,
         num_epochs=args.num_epochs,
         lr=args.lr,
+        weight_decay=args.weight_decay,
         device=args.device, 
         checkpoint_dir=args.checkpoint_dir,
         resume_from=args.resume_from,
