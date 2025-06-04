@@ -71,7 +71,7 @@ def convert_row_dict(row_dict, item_dict):
                 state_dict[key] = np.zeros((0, 5), dtype=np.float32)
 
         elif key == "frame":
-            state_dict[key] = int(float(item))
+            state_dict[key] = int(float(item) / (30 * 60 * 30))
         elif 'kda' in key:
             kda = item.split('/')
             state_dict[key] = kda
