@@ -16,10 +16,24 @@ class GarenBCPolicy(nn.Module):
                 emb_dim = 128,
                 seq_len = 9,
                 num_cont = 88,
-                inter_emb_dim = 512
+                inter_emb_dim = 512,
+                device = "cuda"
                 ):
         super().__init__()
         
+        self.device = device
+
+        self.emb_dim = emb_dim
+        self.num_champions = num_champions
+        self.num_minions = num_minions
+        self.num_towers = num_towers
+        self.num_items = num_items + 1 
+        self.num_cont = num_cont
+        self.num_items_in_game = NUM_ITEMS_PER_CHAMPION * num_players
+
+        self.seq_len = seq_len # number of steps to look back on to predict the next action
+        self.total_char_ids = num_champions + num_minions + num_towers + 1  # +1 for "Unknown" class
+        self.obs_dim = self.num_cont + self.total_char_ids * emb_dim * 2 + self.num_items_in_game * (emb_dim // 2)
         
         self.MLPScreen = nn.Sequential(
             nn.Linear(emb_dim + 4, emb_dim),
@@ -33,23 +47,14 @@ class GarenBCPolicy(nn.Module):
             nn.Linear(emb_dim, emb_dim)
         )
 
-        self.emb_dim = emb_dim
-        self.num_champions = num_champions
-        self.num_minions = num_minions
-        self.num_towers = num_towers
-        self.num_items = num_items + 1 
-        self.num_cont = num_cont
-        self.num_items_in_game = NUM_ITEMS_PER_CHAMPION * num_players
-
-        self.seq_len = seq_len # number of steps to look back on to predict the next action
-        self.total_char_ids = num_champions + num_minions + num_towers + 1  # +1 for "Unknown" class
-        self.obs_dim = self.num_cont + self.total_char_ids * emb_dim * 2 + self.num_items_in_game * (emb_dim // 2)
-
         self.char_embedding = nn.Embedding(num_embeddings = self.total_char_ids,
                                       embedding_dim = emb_dim)
         
         self.item_embedding = nn.Embedding(num_embeddings = num_items,
                                       embedding_dim = emb_dim//2)
+
+        
+
         self.frame_embed_dim = inter_emb_dim
         self.mlp_reducer = nn.Sequential(
             nn.Linear(self.obs_dim, self.frame_embed_dim),
@@ -66,7 +71,7 @@ class GarenBCPolicy(nn.Module):
             batch_first=True
         )
 
-        self.move_head = nn.Linear(emb_dim, 1) # Output: degree to turn
+        self.move_head = nn.Linear(emb_dim, 25) # Output: degree to turn
         self.attack_head = nn.Linear(emb_dim, 1) # Output: whether to attack or not
         self.target_head = nn.Linear(emb_dim, 2) # Output: target x, target y
         self.ability_head = nn.Linear(emb_dim, 6) # Output: ability qwerdf
@@ -181,6 +186,44 @@ class GarenBCPolicy(nn.Module):
             "abil_logits":  abil_logits
         }
 
+    def loss(self, outputs, expert):
+        loss = torch.tensor(0.0, device=self.device)
+
+        # – move_dir (cross‐entropy over 25 classes)
+        move_t = torch.tensor(
+            [expert["move_dir"]], dtype=torch.long, device=self.device
+        )  # shape (1,)
+        move_logits = outputs["move_logits"] # ensure shape (1,25) if needed
+        loss_move = F.cross_entropy(move_logits, move_t)
+        loss = loss + 2 * loss_move
+
+        # – attack_flag (BCEWithLogits)
+        atk_t = torch.tensor([expert["target"]], dtype=torch.float32, device=self.device)
+        atk_logit = outputs["attack_logit"]  
+        loss_atk = F.binary_cross_entropy_with_logits(atk_logit, atk_t)
+        loss = loss + loss_atk
+
+        # – target x,y only if attack==1
+        if expert["target"] == 1:
+            ex_xy = torch.tensor(
+                [[expert["x"], expert["y"]]], dtype=torch.float32, device=self.device
+            )  # shape (1,2)
+            loss_xy = F.mse_loss(outputs["xy_pred"], ex_xy)
+        else:
+            loss_xy = torch.tensor(0.0, device=self.device)
+
+        loss = loss + loss_xy
+
+        # – abilities (6-binary BCEWithLogits)
+        ex_abil = torch.tensor(
+            [expert["abilities"]], dtype=torch.float32, device=self.device
+        )  # shape (1,6)
+        loss_abil = F.binary_cross_entropy_with_logits(
+            outputs["abil_logits"], ex_abil
+        )
+        loss = loss + loss_abil
+        return loss
+    
     def predict(self, state):
         with torch.no_grad():
             return self.forward(state)
