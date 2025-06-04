@@ -33,6 +33,7 @@ def train_bc_on_directory(
     num_epochs: int = 5,
     lr: float = 1e-4,
     weight_decay: float = 1e-4,
+    grad_clip: float = 1.0, 
     device: str = "cuda", 
     checkpoint_dir: str = None, 
     resume_from: str = None,
@@ -135,6 +136,10 @@ def train_bc_on_directory(
                 # 4) Backprop + step
                 optimizer.zero_grad()
                 loss.backward()
+
+                if grad_clip > 0.0:
+                    torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=grad_clip)
+
                 optimizer.step()
 
                 loss_val = loss.item()
@@ -178,6 +183,7 @@ def main():
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
     parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for the optimizer.")
+    parser.add_argument("--grad_clip", type=float, default=0.0, help="If > 0, clip gradient norm to this value.")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run training on (e.g., 'cuda' or 'cpu').")
     parser.add_argument("--checkpoint_dir", type=str, default=None, help="Directory to save checkpoints.")
     parser.add_argument("--resume_from", type=str, default=None, help="Path to a checkpoint to resume training from.")
@@ -191,6 +197,7 @@ def main():
         num_epochs=args.num_epochs,
         lr=args.lr,
         weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
         device=args.device, 
         checkpoint_dir=args.checkpoint_dir,
         resume_from=args.resume_from,
