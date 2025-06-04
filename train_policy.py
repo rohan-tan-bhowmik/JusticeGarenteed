@@ -5,6 +5,9 @@ import random
 import numpy as np
 import torch
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+
 from torch.optim import Adam, AdamW
 from LolGarenEnv import GarenReplayEnv
 from policy import GarenBCPolicy
@@ -29,6 +32,7 @@ def train_bc_on_directory(
     seq_len: int = 9,
     num_epochs: int = 5,
     lr: float = 1e-4,
+    weight_decay: float = 1e-4,
     device: str = "cuda", 
     checkpoint_dir: str = None, 
     resume_from: str = None,
@@ -75,7 +79,7 @@ def train_bc_on_directory(
     policy = GarenBCPolicy(device = device).to(device)
     policy.to(device)
 
-    optimizer = AdamW(policy.parameters(), lr=lr)
+    optimizer = AdamW(policy.parameters(), lr=lr, weight_decay=weight_decay)
 
     if checkpoint_dir is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
@@ -173,6 +177,7 @@ def main():
     parser.add_argument("--seq_len", type=int, default=9, help="Length of input sequence for the policy.")
     parser.add_argument("--num_epochs", type=int, default=5, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
+    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay for the optimizer.")
     parser.add_argument("--device", type=str, default="cuda", help="Device to run training on (e.g., 'cuda' or 'cpu').")
     parser.add_argument("--checkpoint_dir", type=str, default=None, help="Directory to save checkpoints.")
     parser.add_argument("--resume_from", type=str, default=None, help="Path to a checkpoint to resume training from.")
