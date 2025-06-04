@@ -25,6 +25,8 @@ ITEMS = set(['b1-1', 'b1-2', 'b1-3', 'b1-4', 'b1-5', 'b1-6', 'b1-7',
 LANE_X_MIN, LANE_X_MAX = 0.15, 0.85
 LANE_Y_MIN, LANE_Y_MAX = 0.18, 0.55
 ITEM_DICT_PATH = "item_dict.json"
+SCREEN_WIDTH = 1920
+SCREEN_HEIGHT = 1080
 
 # Precompute unit vectors for 24 directions (every 15 degrees)
 N_DIRS = 24
@@ -33,7 +35,7 @@ STEP_R = 0.05  # normalized step size
 MOVEMENT_MAPPING = {angle: i for i, angle in enumerate(range(0, 360, ANGLE))}
 print(MOVEMENT_MAPPING)
 
-champtoi = {k: v.lower() for v, k in CONDENSED_CHAMPIONS_TO_I.items()} 
+champtoi = {k.lower(): v for k, v in CONDENSED_CHAMPIONS_TO_I.items()} 
 itochamp = {v: k for k, v in champtoi.items()}
 
 def convert_row_dict(row_dict, item_dict):
@@ -43,18 +45,19 @@ def convert_row_dict(row_dict, item_dict):
     state_dict = row_dict.copy()
     del state_dict["move_dir"]
     del state_dict["target"]
-
+    state_dict["garen_pos"] = (0.5, 0.5)
     action_dict = {}
+    
     for key, item in row_dict.items():
         if item == '' or item == '0':
             if key in ITEMS:
                 state_dict[key] = len(item_dict) # Use the length of item_dict as a placeholder for no item
-            else:
+            elif key not in 'minions towers minimap champions':
                 state_dict[key] = 0
+            else:
+                state_dict[key] = np.zeros((0, 5), dtype=np.float32)
         elif key == "frame":
             state_dict[key] = int(item)
-        elif key == "champion":
-            state_dict[key] = champtoi.get(item, -1)
         elif 'kda' in key:
             kda = item.split('/')
             state_dict[key] = kda
@@ -66,38 +69,74 @@ def convert_row_dict(row_dict, item_dict):
             else:
                 raise ValueError(f"Item {item_name} not found in item_dict.")
         elif key == "minimap":
-            detections = []
+            rows = []  # Python list of [class_id, x, y]
             for minimap_detection in item.split('|'):
-                if minimap_detection:
-                    parts = minimap_detection.split(':')
-                    class_id = champtoi.get(parts[0], -1)  # Get class ID from name
-                    coords = parts[1].split(',')
-                    x = float(coords[0])
-                    y = float(coords[1])
-                    detections.append((class_id, x, y))
+                if not minimap_detection:
+                    continue
+                parts = minimap_detection.split(':')
+                class_id = champtoi.get(parts[0], len(champtoi))  # or -1 if name not found
+                coords = parts[1].split(',')
+                x = float(coords[0])
+                y = float(coords[1])
+                rows.append([class_id, x, y])
+
+            # Convert list → numpy array of shape (N, 3), or (0, 3) if empty
+            detections = np.array(rows, dtype=np.float32)
             state_dict[key] = detections
+
         elif key == "move_dir":
             if item == 'STOPPED':
-                action_dict[key] = N_DIRS + 1  # Use N_DIRS + 1 to represent stopped state
+                action_dict[key] = N_DIRS + 1  # sentinel for “stopped”
             else:
-                item = int(item)
-                action_dict[key] = MOVEMENT_MAPPING.get(item)
+                action_dict[key] = MOVEMENT_MAPPING.get(int(item), N_DIRS + 1)
+
         elif key == "champions":
-            detections = []
+            rows = []  # Python list of [class_id, x_ratio, y_ratio, health, color]
+            detected_champions = set()
             for champion_detection in item.split('|'):
-                if champion_detection:
-                    champion_name, x, y, _, color = champion_detection.split(',')
-                    class_id = champtoi.get(champion_name)
-                    detections.append((class_id, float(x), float(y), color))
+                if not champion_detection:
+                    continue
+                champion_name, x, y, health, color = champion_detection.split(',')
+                color_flag = 1 if color == 'Blue' else 0
+
+                if champion_name.lower() == 'garen':
+                    state_dict["garen_pos"] = (float(x), float(y))
+
+                detected_champions.add(champion_name.lower())
+                class_id = champtoi.get(champion_name.lower(), len(champtoi))  # or len(champtoi) if name not found
+                rows.append([
+                    class_id,
+                    round(float(x) / SCREEN_WIDTH, 3),
+                    round(float(y) / SCREEN_HEIGHT, 3),
+                    float(health),
+                    color_flag
+                ])
+
+            
+            detections = np.array(rows, dtype=np.float32)
             state_dict[key] = detections
-        elif key == "minions":
-            detections = []
-            for minion_detection in item.split('|'):
-                if minion_detection:
-                    minion_name, x, y, _, color = minion_detection.split(',')
-                    class_id = champtoi.get(minion_name)
-                    detections.append((class_id, float(x), float(y), color))
+
+        elif key == "minions" or key == "towers":
+            rows = []  # Python list of [class_id, x_ratio, y_ratio, health, color]
+            for detection in item.split('|'):
+                if not detection:
+                    continue
+                name, x, y, health, color = detection.split(',')
+                color_flag = 1 if color == 'Blue' else 0
+                class_id = champtoi.get(name.lower(), len(champtoi))
+                rows.append([
+                    class_id,
+                    round(float(x) / SCREEN_WIDTH, 3),
+                    round(float(y) / SCREEN_HEIGHT, 3),
+                    float(health),
+                    color_flag
+                ])
+            
+            detections = np.array(rows, dtype=np.float32)
+            
             state_dict[key] = detections
+            print(f"{key} = {state_dict[key]}")
+
         elif key == "target":
             if item == 'NONE':
                 action_dict[key] = 0 # binary flag for no target
@@ -242,15 +281,65 @@ class GarenReplayEnv(gym.Env):
         """
         Convert the feature dict into a flat numpy array of floats.
         Convert numeric strings to floats; extract only chosen features here.
-        """
-        # Example: extract a few continuous features for demonstration
-        x = float(step_dict["minimap_x_ratio"])
-        y = float(step_dict["minimap_y_ratio"])
-        hp = float(step_dict["health-bar"])
-        attack_speed = float(step_dict["attack-speed"])
-        # You would extend this to include all desired fields and embeddings
 
-        return np.array([x, y, hp, attack_speed], dtype=np.float32)
+        Returns: flat array of features, minimap detections, champion detections, and minion detections.
+        """
+
+        frame = step_dict["frame"]
+        x, y = step_dict.get("garen_pos", 0) # garen's position on the screen
+        mini_x, mini_y = step_dict.get("minimap_x_ratio", 0.0), step_dict.get("minimap_y_ratio", 0) # garen's position on minimap
+        move_dir = step_dict.get("move_dir", 0)
+        xp_bar = step_dict.get("xp-bar", 0.0)
+        health_bar = step_dict.get("health-bar")
+        attack_dmg = step_dict.get("attack-damage", 0.0)
+        armor = step_dict.get("armor", 0.0)
+        magic_resist = step_dict.get("magic-resist", 0.0)
+        move_speed = step_dict.get("move-speed", 0.0)
+        q_cd = step_dict.get("q-cd", 0.0)
+        w_cd = step_dict.get("w-cd", 0.0)
+        e_cd = step_dict.get("e-cd", 0.0)
+        r_cd = step_dict.get("r-cd", 0.0)
+        d_cd = step_dict.get("d-cd", 0.0)
+        f_cd = step_dict.get("f-cd", 0.0)
+        lanes = ["b1, b2, b3, b4, b5, r1, r2, r3, r4, r5"]
+        objective_names = ["towers", "grubs", "heralds-barons", "dragons", "kills"]
+        kdas, cs, health_levels, levels, objectives, items = [], [], [], [], [], []
+        for lane in lanes:
+            kda = step_dict[f"{lane}-kda"]
+            kdas.extend(kda)
+            cs.append(step_dict.get(f"{lane}-cs", 0.0))
+            health_levels.append(step_dict.get(f"{lane}-health", 0.0))
+            levels.append(step_dict.get(f"{lane}-level", 0.0))
+        for objective in objective_names:
+            objectives.append(step_dict.get(f"b-{objective}", 0.0))
+            objectives.append(step_dict.get(f"r-{objective}", 0.0))
+
+        for item in ITEMS:
+            items.append(step_dict.get(item, len(ITEMS)))  # Use length of ITEMS as placeholder for no item
+
+        # concatenate all features into a flat array
+        state = np.array([
+            frame, x, y, mini_x, mini_y, move_dir,
+            xp_bar, health_bar, attack_dmg, armor, magic_resist,
+            move_speed, q_cd, w_cd, e_cd, r_cd, d_cd, f_cd
+        ] + kdas + cs + health_levels + levels + objectives)
+
+        # minimap detections
+        minimap_detections = np.array(step_dict.get("minimap", [])) # shape (N, class + x + y) where N is the number of detections
+        # on-screen detections
+        champion_detections = np.array(step_dict.get("champions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+        minion_detections = np.array(step_dict.get("minions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+        tower_detections = np.array(step_dict.get("towers", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+
+        # concatenate all on-screen detections
+        screen_detections = np.concatenate((champion_detections, minion_detections, tower_detections), axis=0)
+        
+        return {
+            "continuous_f": state.astype(np.float32),
+            "minimap_detections": minimap_detections.astype(np.float32),
+            "screen_detections": screen_detections.astype(np.float32), 
+            "items": np.array(items, dtype=np.uint8)
+        }
 
 def main():
     pass
