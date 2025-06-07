@@ -662,7 +662,12 @@ def main(replay_folder: str, game_name: str, scale: float, skip_n: int, wild_thr
                         x_hb, y_hb, w_hb, h_hb = hb_box
                         crop_hb = frame[y_hb:y_hb+h_hb, x_hb:x_hb+w_hb]
                         bar_color = "blue" if hb_label.startswith("Blue") else "red"
-                        pct = minion_health_percent(crop_hb, bar_color=bar_color)
+                        if crop_hb.size == 0:
+                            # No valid pixels in this crop—treat health as 0% or skip this box entirely
+                            pct = 0.0
+                        else:
+                            pct = minion_health_percent(crop_hb, bar_color=bar_color)
+
 
                         # Determine minion center (body center)
                         mx, my, mw, mh = sp_box
@@ -1262,7 +1267,7 @@ if __name__ == "__main__":
                         help="Only process every Nth frame")
     parser.add_argument("--wild", type=float, default=0.0,
                         help="Optical‐flow magnitude threshold to trigger minimap search")
-    parser.add_argument("--weights", type=str, default="checkpoint0015.pth",
+    parser.add_argument("--weights", type=str, default="checkpoint_best_ema.pth",
                         help="RF-DETR .pth weights file")
     parser.add_argument("--csv", type=str, default=None,
                         help="Output CSV file path for saving stats")
