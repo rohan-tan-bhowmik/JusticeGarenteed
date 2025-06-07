@@ -50,7 +50,7 @@ def convert_row_dict(row_dict, item_dict):
             else:
                 action_dict[key] = MOVEMENT_MAPPING.get(int(item), N_DIRS)
 
-        if key == "target":
+        elif key == "target":
             if item == 'NONE':
                 action_dict[key]   = 0
                 action_dict["x"]   = None
@@ -71,7 +71,7 @@ def convert_row_dict(row_dict, item_dict):
                 state_dict[key] = np.zeros((0, 5), dtype=np.float32)
 
         elif key == "frame":
-            state_dict[key] = int(float(item))
+            state_dict[key] = int(float(item) / (30 * 60 * 30))
         elif 'kda' in key:
             kda = item.split('/')
             state_dict[key] = kda
@@ -97,13 +97,22 @@ def convert_row_dict(row_dict, item_dict):
             # Convert list → numpy array of shape (N, 3), or (0, 3) if empty
             detections = np.array(rows, dtype=np.float32)
             state_dict[key] = detections
-
         
-        elif key in ['q-cd', 'w-cd',	'e-cd', 'r-cd',	'd-cd', 'f-cd']:
+        elif key in ['q-cd', 'w-cd', 'e-cd', 'r-cd', 'd-cd', 'f-cd']:
             if item == "not learned":
                 state_dict[key] = -1.0
-            if item == "enabled":
+            elif item == "enabled":
                 state_dict[key] = 0.0
+            else:
+                max_cooldowns = {
+                    'q-cd': 8.0,
+                    'w-cd': 10.0,
+                    'e-cd': 12.0,
+                    'r-cd': 120.0,
+                    'd-cd': 300.0,
+                    'f-cd': 300.0
+                }
+                state_dict[key] = float(item) / max_cooldowns.get(key, 1.0)  # Normalize cooldowns
 
         elif key == "champions":
             rows = []  # Python list of [class_id, x_ratio, y_ratio, health, color]
@@ -149,6 +158,35 @@ def convert_row_dict(row_dict, item_dict):
             detections = np.array(rows, dtype=np.float32)
             
             state_dict[key] = detections
+        elif key == 'xp-bar':
+            xp_bar_value = float(item)
+            state_dict[key] = xp_bar_value / 100  # Normalize to [0, 1]
+        elif "gold" in key:
+            gold = float(item[:-1])
+            state_dict[key] = gold / 50
+        elif 'health' in key:
+            health_value = float(item)
+            state_dict[key] = health_value / 100 
+        elif 'mana' in key:
+            mana_value = float(item)
+            state_dict[key] = mana_value / 100
+        elif key == 'move-speed':
+            state_dict[key] = float(item) / 600
+        elif key == 'attack-dmg':
+            state_dict[key] = float(item) / 300
+        elif key == 'armor':
+            state_dict[key] = float(item) / 300
+        elif key == 'magic-resist':
+            state_dict[key] = float(item) / 300
+        elif 'level' in key:
+            state_dict[key] = float(item) / 18  # Max level is 18
+        elif 'grubs' in key:
+            state_dict[key] = float(item) / 3  # Max grubs is 3
+        elif 'heralds-barons' in key or 'dragons' in key:
+            state_dict[key] = float(item) / 2
+        elif key == 'r-towers' or key == 'b-towers':
+            item = item.split(' ')
+            state_dict[key] = float(item[0]) / 11 
 
     return state_dict, action_dict
 
