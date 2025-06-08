@@ -238,7 +238,7 @@ def chroma_key_with_glow_preservation(
     mask_uint8 = (strong_mask.astype(np.uint8)) * 255
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     cleaned = cv2.morphologyEx(mask_uint8, cv2.MORPH_OPEN, kernel, iterations=1)
-    cleaned_blur = cv2.GaussianBlur(cleaned.astype(np.float32), (5, 5), sigmaX=1.5)
+    cleaned_blur = cv2.GaussianBlur(cleaned.astype(np.float32), (3, 3), sigmaX=2.0)
     cleaned_alpha = (cleaned_blur / 255.0).clip(0, 1)
 
     out = cv2.cvtColor(img_bgr.copy(), cv2.COLOR_BGR2BGRA)
@@ -411,7 +411,7 @@ def expand_cutout(cutout: np.ndarray,
 
     return resized, champ_box_adj, mask_box_adj, pet_boxes_adj
 
-def reduce_transparency(cutout, min_alpha_factor = 0.2, max_alpha_factor=0.45):
+def reduce_transparency(cutout, min_alpha_factor = 0.1, max_alpha_factor=0.3):
     """
     Reduce the transparency of the cutout image by scaling the alpha channel.
     
@@ -697,8 +697,8 @@ def generate_cutout(img_path, annotation_path, split, minion=False, make_transpa
     #         cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
 
     # Occasionally make cutout transparent to simulate hiding in bushes
-    if random.random() < make_transparent_prob:
-        cutout = reduce_transparency(cutout)
+    # if random.random() < make_transparent_prob:
+    #     cutout = reduce_transparency(cutout)
 
     return cutout, box_dict 
   
@@ -745,7 +745,7 @@ def generate_cutouts(champion_img_paths, minion_img_paths, annotation_path, spli
     
     return cutouts_sorted, box_dicts_sorted, minion_cutouts, minion_box_dicts
 
-def is_far_enough(new_pos, existing_pos, min_dist = 150):
+def is_far_enough(new_pos, existing_pos, min_dist = 200):
     return all(np.linalg.norm(np.array(new_pos) - np.array(p)) > min_dist for p in existing_pos)
 
 def generate_grid_offsets(spacing=60, rows=3, cols=3):
@@ -1305,7 +1305,7 @@ def fog_of_war(
     pov_center: tuple[int, int] = None,
     r_vis_base: int = 550,
     r_fade_base: int = 1000,
-    fog_threshold: float = 0.05,
+    fog_threshold: float = 0.1,
 ) -> np.ndarray:
     
     """
@@ -1699,12 +1699,12 @@ def generate_single_image(
                 map_img[-320:-256, -256+64*j - 1:-256+64*j+64 - 1, :] = icon_uint8
 
         img_name = f'map_{i:04d}.jpg'
-        img_path = os.path.join(output_dir, split, img_name)
-        cv2.imwrite(img_path, map_img)
+        # img_path = os.path.join(output_dir, split, img_name)
+        # cv2.imwrite(img_path, map_img)
 
-        # plot_image_with_boxes(
-        #     map_img, health_boxes_c + health_boxes_m, health_labels_c + health_labels_m, output_dir=output_dir, split=split, count = i
-        # )
+        plot_image_with_boxes(
+            map_img, boxes, labels, output_dir=output_dir, split=split, count = i
+        )
 
         return {
             "filename": img_name,
