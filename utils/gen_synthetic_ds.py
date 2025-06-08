@@ -201,8 +201,8 @@ def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5
   
 def chroma_key_with_glow_preservation(
     img_bgr: np.ndarray,
-    hsv_lower: int = 50,
-    hsv_upper: int = 70,
+    hsv_lower: int = 40,
+    hsv_upper: int = 80,
     aggressive: bool = False,
     champ_boxes=None,
     pet_boxes=None,
@@ -242,8 +242,10 @@ def chroma_key_with_glow_preservation(
     cleaned_alpha = (cleaned_blur / 255.0).clip(0, 1)
 
     out = cv2.cvtColor(img_bgr.copy(), cv2.COLOR_BGR2BGRA)
+
+    filtered = out.copy()
     TP = (cleaned_alpha >= 0.95)
-    out[TP] = (255, 255, 255, 0)
+    filtered[TP] = (255, 255, 255, 0)
 
     b, g, r = cv2.split(img_bgr.astype(np.float32))
     max_rgb = np.maximum(np.maximum(r, g), b)
@@ -256,7 +258,8 @@ def chroma_key_with_glow_preservation(
     hue_range = ((hsv_upper - hsv_lower) / 2) * 2
     distance_from_lime = np.abs(h - hue_center) / hue_range
 
-    non_white = np.any(img_bgr != [255, 255, 255], axis=-1)
+    non_white = np.any(img_bgr[...,:3] != [255, 255, 255], axis=-1)
+    
     avg_proximity = np.clip(
         float(distance_from_lime[non_white].mean()) * (3 / hue_center / hue_range),
         0, 1
@@ -269,6 +272,8 @@ def chroma_key_with_glow_preservation(
         * (1.0 + whiteness ** 2)
     ).clip(0, 255) / 255.0
 
+    out = filtered
+
     fg = np.any(out[..., :3] != 255, axis=-1)
     for c in range(3):
         ch = out[..., c].astype(np.float32)
@@ -276,12 +281,18 @@ def chroma_key_with_glow_preservation(
         out[..., c] = np.clip(ch, 0, 255).astype(np.uint8)
 
     computed_alpha = (
-        (distance_from_lime + (255 - v) / 255) ** 2
-        * (255 - v * 0.4)
+        (distance_from_lime)**2
+        * (255 - v * 0.6)
         * (1 - avg_proximity)
     ).clip(0, 255).astype(np.uint8)
 
-    out[..., 3] = np.where(TP, 0, computed_alpha)
+    raw_alpha = np.where(TP, 0, computed_alpha).astype(np.uint8)
+
+    # 2) Blur it across the whole image
+    #    You can tweak the kernel size and sigma to taste
+    blurred_alpha = cv2.GaussianBlur(raw_alpha, (3, 3), sigmaX=2.0)
+
+    out[..., 3] = np.where(TP, 0, blurred_alpha)
     return out
   
 def IoU(box1, box2):
