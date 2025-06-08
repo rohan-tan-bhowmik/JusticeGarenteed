@@ -164,7 +164,7 @@ def plot_image_with_boxes(img, boxes, labels, output_dir, split, count):
         xmin, ymin, xmax, ymax = box
         plt.gca().add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin, fill=False, color='red', linewidth=1))
         plt.text(xmin, ymin -25, str(itochamp[label]), color='red', fontsize=7)
-
+    plt.axis('off')
     plt.savefig(f'{output_dir}/{split}/map_{count:04d}.jpg', dpi=400)
 
 def generate_map_frames(video_path, dir_to_save, start_second, end_second, n = 5):
@@ -411,7 +411,7 @@ def expand_cutout(cutout: np.ndarray,
 
     return resized, champ_box_adj, mask_box_adj, pet_boxes_adj
 
-def reduce_transparency(cutout, min_alpha_factor = 0.1, max_alpha_factor=0.3):
+def reduce_transparency(cutout, min_alpha_factor = 0.7, max_alpha_factor=0.95):
     """
     Reduce the transparency of the cutout image by scaling the alpha channel.
     
@@ -584,7 +584,7 @@ def hv_jitter(cutout, hue_shift_limit=40, val_shift_limit=0.15):
 
     return champion_jittered
  
-def generate_cutout(img_path, annotation_path, split, minion=False, make_transparent_prob = 0.05):
+def generate_cutout(img_path, annotation_path, split, minion=False, make_transparent_prob = 0.1):
     """
     Generate a cutout image from the original image and its corresponding XML file.
     Returns cutout and a dictionary with bounding boxes for champion, pet, and ability in PASCAL VOC format.
@@ -1302,10 +1302,11 @@ def fog_of_war(
     img: np.ndarray,
     box_dict_champ: dict[str, list[list[int]]],
     box_dict_minion: dict[str, list[list[int]]],
+    box_dict_map: dict[str, list[list[int]]] = None,
     pov_center: tuple[int, int] = None,
     r_vis_base: int = 550,
     r_fade_base: int = 1000,
-    fog_threshold: float = 0.1,
+    fog_threshold: float = 0.05,
 ) -> np.ndarray:
     
     """
@@ -1324,8 +1325,13 @@ def fog_of_war(
             all_units.append({"bbox": box, "team": "champ", "class": cls})
     for cls, boxes in box_dict_minion.items():
         for box in boxes:
-            team = "blue" if "blue" in cls else "red"
+            team = "blue" if "blue" in cls.lower() else "red"
             all_units.append({"bbox": box, "team": team, "class": cls})
+    if box_dict_map is not None:
+        for cls, boxes in box_dict_map.items():
+            for box in boxes:
+                team = "blue" if "blue" in cls.lower() else "red"
+                all_units.append({"bbox": box, "team": team, "class": cls})
 
     # Determine POV center
     if pov_center is None:
@@ -1631,14 +1637,13 @@ def generate_single_image(
         box_dict_minion.pop('Mask', None)
 
         if random.random() > 0.5:
-            map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion)
+            map_img = fog_of_war(map_img, box_dict_champ, box_dict_minion, box_dict_map=map_box_dict)
 
         boxes_c, labels_c = get_boxes_from_box_dict(box_dict_champ)
         boxes_m, labels_m = get_boxes_from_box_dict(box_dict_minion)
         health_boxes_c, health_labels_c = get_boxes_from_box_dict(champ_health_box_dict)
         health_boxes_m, health_labels_m = get_boxes_from_box_dict(minion_health_box_dict)
         boxes_map, labels_map = get_boxes_from_box_dict(map_box_dict)
-
         
         boxes = boxes_c + boxes_m + boxes_map + health_boxes_c + health_boxes_m
         labels = labels_c + labels_m + labels_map + health_labels_c + health_labels_m
