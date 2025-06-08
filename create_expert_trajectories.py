@@ -5,6 +5,7 @@ import json
 from classes import CONDENSED_CHAMPIONS_TO_I, HEALTHBAR_CLASSES
 import os
 from tqdm import tqdm
+import torch
 
 ITEMS = set(['b1-1', 'b1-2', 'b1-3', 'b1-4', 'b1-5', 'b1-6', 'b1-7',
  'r1-1', 'r1-2', 'r1-3', 'r1-4', 'r1-5', 'r1-6', 'r1-7',
@@ -17,13 +18,14 @@ ITEMS = set(['b1-1', 'b1-2', 'b1-3', 'b1-4', 'b1-5', 'b1-6', 'b1-7',
  'b5-1', 'b5-2', 'b5-3', 'b5-4', 'b5-5', 'b5-6', 'b5-7',
  'r5-1', 'r5-2', 'r5-3', 'r5-4', 'r5-5', 'r5-6', 'r5-7'])
 
-# Lane‐bounds (normalized) for clipping movement
-LANE_X_MIN, LANE_X_MAX = 0.15, 0.85
-LANE_Y_MIN, LANE_Y_MAX = 0.18, 0.55
-# Maximum number of detections per frame - this really can be any number but set it to a reasonably
-# large enough value to accomodate most frames but not eat up too much memory. We're gonna index
-# this out anyway so if you have enough disk space this can be as high as you want.
-MAX_NUM_DETECTIONS = 50 
+# Maximum number of champions that can show up on screen at once - minimap and on-screen included
+# This is set slightly higher to account for detection inaccuracies 
+MAX_NUM_CHAMPIONS = 25
+MAX_NUM_MINIONS = 30
+MAX_NUM_TOWERS = 10
+MAX_NUM_DETECTIONS = MAX_NUM_CHAMPIONS + MAX_NUM_MINIONS + MAX_NUM_TOWERS
+NUM_CONTINUOUS_F = 88
+
 ITEM_DICT_PATH = "item_dict.json"
 SCREEN_WIDTH = 1920
 SCREEN_HEIGHT = 1080
@@ -75,8 +77,15 @@ def convert_row_dict(row_dict, item_dict, team_info=None):
                 state_dict[key] = np.zeros((0, 5), dtype=np.float32)
 
         elif key == "frame":
-            state_dict[key] = int(float(item) / (30 * 60 * 30))
+            state_dict[key] = float(item) / (30 * 60 * 30)
         elif 'kda' in key:
+            if len(item.split('/')) == 2:
+                if '7' in item:
+                    seven_i = item.find('7')
+                    item = item[:seven_i] + '/' + item[seven_i + 1:]
+                else:
+                    item += '/0'
+            
             kda = item.split('/')
             state_dict[key] = kda
         elif key in ITEMS:
@@ -114,19 +123,19 @@ def convert_row_dict(row_dict, item_dict, team_info=None):
             state_dict[key] = detections
         
         elif key in ['q-cd', 'w-cd', 'e-cd', 'r-cd', 'd-cd', 'f-cd']:
-            if item == "not learned":
-                state_dict[key] = -1.0
-            elif item == "enabled":
-                state_dict[key] = 0.0
-            else:
-                max_cooldowns = {
+            max_cooldowns = {
                     'q-cd': 8.0,
                     'w-cd': 10.0,
                     'e-cd': 12.0,
                     'r-cd': 120.0,
                     'd-cd': 300.0,
                     'f-cd': 300.0
-                }
+                    }
+            if item == "not learned":
+                state_dict[key] = 1.0  # Use max cooldown as placeholder
+            elif item == "enabled":
+                state_dict[key] = 0.0
+            else:   
                 state_dict[key] = float(item) / max_cooldowns.get(key, 1.0)  # Normalize cooldowns
 
         elif key == "champions":
@@ -202,73 +211,118 @@ def convert_row_dict(row_dict, item_dict, team_info=None):
         elif key == 'r-towers' or key == 'b-towers':
             item = item.split(' ')
             state_dict[key] = float(item[0]) / 11 
+        elif key == 'game-time':
+            minutes, seconds = 0, 0
+            if ':' in item:
+                seconds = item.split(':')[1]
+                time = int(minutes) * 60 + int(seconds)
+            else:
+                time = float(item) * 60
+            state_dict[key] = float(time) / (60 * 60) # reasonable max game time is 60 minutes
+        else:
+            state_dict[key] = float(item) if item else 0.0
 
     return state_dict, action_dict
 
-def dict_to_observation(self, step_dict):
-        """
-        Convert the feature dict into a flat numpy array of floats.
-        Convert numeric strings to floats; extract only chosen features here.
+def get_cont_f(step_dict):
+    frame = step_dict["frame"]
+    x, y = step_dict.get("garen_pos", 0) # garen's position on the screen
+    mini_x, mini_y = step_dict.get("minimap_x_ratio", 0.0), step_dict.get("minimap_y_ratio", 0) # garen's position on minimap
+    move_dir = step_dict.get("move_dir", 0)
+    xp_bar = step_dict.get("xp-bar", 0.0)
+    health_bar = step_dict.get("health-bar")
+    attack_dmg = step_dict.get("attack-damage", 0.0)
+    armor = step_dict.get("armor", 0.0)
+    magic_resist = step_dict.get("magic-resist", 0.0)
+    move_speed = step_dict.get("move-speed", 0.0)
+    q_cd = step_dict.get("q-cd", 0.0)
+    w_cd = step_dict.get("w-cd", 0.0)
+    e_cd = step_dict.get("e-cd", 0.0)
+    r_cd = step_dict.get("r-cd", 0.0)
+    d_cd = step_dict.get("d-cd", 0.0)
+    f_cd = step_dict.get("f-cd", 0.0)
+    lanes = ["b1", "b2", "b3", "b4", "b5", "r1", "r2", "r3", "r4", "r5"]
+    objective_names = ["towers", "grubs", "heralds-barons", "dragons", "kills"]
 
-        Returns: flat array of features, minimap detections, champion detections, and minion detections.
-        """
-        frame = step_dict["frame"]
-        x, y = step_dict.get("garen_pos", 0) # garen's position on the screen
-        mini_x, mini_y = step_dict.get("minimap_x_ratio", 0.0), step_dict.get("minimap_y_ratio", 0) # garen's position on minimap
-        move_dir = step_dict.get("move_dir", 0)
-        xp_bar = step_dict.get("xp-bar", 0.0)
-        health_bar = step_dict.get("health-bar")
-        attack_dmg = step_dict.get("attack-damage", 0.0)
-        armor = step_dict.get("armor", 0.0)
-        magic_resist = step_dict.get("magic-resist", 0.0)
-        move_speed = step_dict.get("move-speed", 0.0)
-        q_cd = step_dict.get("q-cd", 0.0)
-        w_cd = step_dict.get("w-cd", 0.0)
-        e_cd = step_dict.get("e-cd", 0.0)
-        r_cd = step_dict.get("r-cd", 0.0)
-        d_cd = step_dict.get("d-cd", 0.0)
-        f_cd = step_dict.get("f-cd", 0.0)
-        lanes = ["b1", "b2", "b3", "b4", "b5", "r1", "r2", "r3", "r4", "r5"]
-        objective_names = ["towers", "grubs", "heralds-barons", "dragons", "kills"]
-        kdas, cs, health_levels, levels, objectives, items = [], [], [], [], [], []
-        for lane in lanes:
-            kda = step_dict[f"{lane}-kda"]
-            kdas.extend(kda)
-            cs.append(step_dict.get(f"{lane}-cs", 0.0))
-            health_levels.append(step_dict.get(f"{lane}-health", 0.0))
-            levels.append(step_dict.get(f"{lane}-level", 0.0))
-        for objective in objective_names:
-            objectives.append(step_dict.get(f"b-{objective}", 0.0))
-            objectives.append(step_dict.get(f"r-{objective}", 0.0))
+    kdas, cs, health_levels, levels, objectives = [], [], [], [], []
+    for lane in lanes:
+        kda = step_dict[f"{lane}-kda"]
+        kdas.extend(kda)
+        cs.append(step_dict.get(f"{lane}-cs", 0.0))
+        health_levels.append(step_dict.get(f"{lane}-health", 0.0))
+        levels.append(step_dict.get(f"{lane}-level", 0.0))
+    for objective in objective_names:
+        objectives.append(step_dict.get(f"b-{objective}", 0.0))
+        objectives.append(step_dict.get(f"r-{objective}", 0.0))
 
-        for item in ITEMS:
-            items.append(step_dict.get(item, len(ITEMS)))  # Use length of ITEMS as placeholder for no item
+    # concatenate all features into a flat array
+    state = np.array([
+        frame, x, y, mini_x, mini_y, move_dir,
+        xp_bar, health_bar, attack_dmg, armor, magic_resist,
+        move_speed, q_cd, w_cd, e_cd, r_cd, d_cd, f_cd
+    ] + kdas + cs + health_levels + levels + objectives)
 
-        # concatenate all features into a flat array
-        state = np.array([
-            frame, x, y, mini_x, mini_y, move_dir,
-            xp_bar, health_bar, attack_dmg, armor, magic_resist,
-            move_speed, q_cd, w_cd, e_cd, r_cd, d_cd, f_cd
-        ] + kdas + cs + health_levels + levels + objectives)
+    return state
 
-        # minimap detections
-        minimap_detections = np.array(step_dict.get("minimap", [])) # shape (N, class + x + y) where N is the number of detections
-        # on-screen detections
-        champion_detections = np.array(step_dict.get("champions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
-        minion_detections = np.array(step_dict.get("minions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
-        tower_detections = np.array(step_dict.get("towers", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+def dict_to_observation(step_dict):
+    """
+    Convert the feature dict into a flat numpy array of floats.
+    Convert numeric strings to floats; extract only chosen features here.
 
-        # concatenate all on-screen detections
-        screen_detections = np.concatenate((champion_detections, minion_detections, tower_detections), axis=0)
-        
-        return {
-            "continuous_f": state.astype(np.float32),
-            "minimap_detections": minimap_detections.astype(np.float32),
-            "screen_detections": screen_detections.astype(np.float32), 
-            "items": np.array(items, dtype=np.uint8)
-        }
+    Returns: flat array of features, minimap detections, champion detections, and minion detections.
+    """
+    
+    state = get_cont_f(step_dict)  # shape (N,) where N is the number of continuous features
+    # minimap detections
+    minimap_detections = np.array(step_dict.get("minimap", [])) # shape (N, class + x + y) where N is the number of detections
+    # on-screen detections
+    champion_detections = np.array(step_dict.get("champions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+    minion_detections = np.array(step_dict.get("minions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+    tower_detections = np.array(step_dict.get("towers", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
 
-def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rate=3):
+    # concatenate all on-screen detections
+    screen_detections = np.concatenate((champion_detections, minion_detections, tower_detections), axis=0)
+    
+    items = []
+    for item in ITEMS:
+        items.append(step_dict.get(item, len(ITEMS)))  # Use length of ITEMS as placeholder for no item
+
+    return {
+        "continuous_f": state.astype(np.float32),
+        "minimap_detections": minimap_detections.astype(np.float32),
+        "screen_detections": screen_detections.astype(np.float32), 
+        "items": np.array(items, dtype=np.uint8)
+    }
+
+def dict_to_obs_arr(step_dict):
+    state = get_cont_f(step_dict)  # shape (N,) where N is the number of continuous features
+    assert state.shape[0] == NUM_CONTINUOUS_F, f"Expected {NUM_CONTINUOUS_F} continuous features, got {state.shape[0]}"
+
+    champ_arr_max_size = MAX_NUM_CHAMPIONS * 5  # class + x + y + hp + color
+    minion_arr_max_size = MAX_NUM_MINIONS * 5  # class + x + y + hp + color
+    tower_arr_max_size = MAX_NUM_TOWERS * 5  # class + x + y + hp + color
+    
+    minimap_detections = np.array(step_dict.get("minimap", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+    champion_detections = np.concatenate((np.array(step_dict.get("champions", [])), minimap_detections), axis = 0) # shape (N, class + x + y + hp + color) where N is the number of detections
+    # flatten and pad
+    champion_detections = np.pad(champion_detections.flatten(), (0, champ_arr_max_size - champion_detections.size), 'constant', constant_values=0) 
+    # pad champion detections to max size
+    minion_detections = np.array(step_dict.get("minions", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+    minion_detections = np.pad(minion_detections.flatten(), (0, minion_arr_max_size - minion_detections.size), 'constant', constant_values=0) # pad minion detections to max size
+    tower_detections = np.array(step_dict.get("towers", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
+    tower_detections = np.pad(tower_detections.flatten(), (0, tower_arr_max_size - tower_detections.size), 'constant', constant_values=0) # pad tower detections to max size
+    
+    # concatenate all detections
+
+    items = []
+    for item in ITEMS:
+        items.append(step_dict.get(item, len(ITEMS)))  # Use length of ITEMS as placeholder for no item
+
+    screen_detections = np.concatenate((state, champion_detections, minion_detections, tower_detections, items))
+
+    return screen_detections 
+
+def parse_csv_pair(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rate=3):
     """
     Returns a list of dicts, each mapping a movement-frame to a merged dict of
     movement info + OCR info (sampled at ocr_sampling_rate).
@@ -300,12 +354,11 @@ def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rat
         start_frame = int(first_row["frame"])
         offset = start_frame % ocr_sampling_rate
 
-        # Prepare to merge OCR in lockstep
         ocr_idx = 0
         ocr_dict = ocr_data[ocr_idx]  # this is like {"123": {…ocr fields…}}
 
         # Process the first movement-row, then loop over the rest
-        for i, row_dict in enumerate([first_row] + list(reader)):
+        for i, row_dict in tqdm(enumerate([first_row] + list(reader))):
             # Merge row_dict + ocr_ dict into a fresh dict
             # Note: ocr_dict is {"<ocr_frame>": {..fields..}}, 
             # so we need its inner dict, not the key.
@@ -313,8 +366,9 @@ def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rat
 
             merged = row_dict.copy()
             merged.update(ocr_fields)
-            
+            merged["frame"] = int(ocr_frame_str)  # Ensure frame is an integer
             state_dict, action_dict = convert_row_dict(merged, item_dict)
+            
             ability_actions = [0, 0, 0, 0, 0, 0]
             all_states.append(state_dict)
             if i > 0:
@@ -329,8 +383,9 @@ def parse_csvs(ocr_csv, movement_csv, ocr_sampling_rate=9, movement_sampling_rat
             # Update OCR index every time we cross an OCR sampling boundary
             if (ocr_idx % ocr_sampling_rate == offset
                     and ocr_idx < len(ocr_data) - 1):
-                ocr_idx += 1
+                
                 ocr_dict = ocr_data[ocr_idx] 
+            ocr_idx += 1
 
     return {"state": all_states, "action": all_actions}
 
@@ -346,7 +401,7 @@ def save_trajectories(ocr_data_dir, movement_data_dir, output_path):
     for ocr_csv, movement_csv in tqdm(zip(ocr_csvs, movement_csvs)):
         ocr_path = os.path.join(ocr_data_dir, ocr_csv)
         movement_path = os.path.join(movement_data_dir, movement_csv)
-        data = parse_csvs(ocr_path, movement_path)
+        data = parse_csv_pair(ocr_path, movement_path)
         output_file = os.path.join(output_path, f"{ocr_csv[:-4]}.pkl")
 
         with open(output_file, 'wb') as f:
@@ -367,7 +422,6 @@ def parse_csvs_arr(ocr_csv, movement_csv, team_info, ocr_sampling_rate=9, moveme
     with open(ITEM_DICT_PATH, 'r') as f:
         item_dict = json.load(f)
    
-    
     ocr_data = []
     with open(ocr_csv, newline="") as f:
         reader = csv.DictReader(f)
@@ -404,19 +458,30 @@ def parse_csvs_arr(ocr_csv, movement_csv, team_info, ocr_sampling_rate=9, moveme
 
             merged = row_dict.copy()
             merged.update(ocr_fields)
+            merged["frame"] = int(float(ocr_frame_str))  # Ensure frame is an integer
+
             state_dict, action_dict = convert_row_dict(merged, item_dict, team_info)
-            # print(state_dict)
-            
+            state_arr = dict_to_obs_arr(state_dict)
+            all_states.append(state_arr)
+
             ability_actions = [0, 0, 0, 0, 0, 0]
-            all_states.append(state_dict)
+
             if i > 0:
-                prev_state = all_states[i - 1]
                 for i, cd_key in enumerate(['q-cd', 'w-cd',	'e-cd', 'r-cd',	'd-cd', 'f-cd']):
                     if merged[cd_key] != 0 and prev_state[cd_key] == 0 and merged[cd_key] != "not learned": # ability was used (thus, cooldown is nonzero at current step)
                         ability_actions[i] = 1
+            prev_state = state_dict
 
             action_dict["abilities"] = ability_actions
-            all_actions.append(action_dict)            
+            action_arr = np.array([
+                action_dict["move_dir"], 
+                action_dict["target"],
+                action_dict["x"] if action_dict["target"] else -1,
+                action_dict["y"] if action_dict["target"] else -1])
+            
+            action_arr = np.concatenate((action_arr, np.array(ability_actions)))
+
+            all_actions.append(action_arr)            
 
             # Update OCR index every time we cross an OCR sampling boundary
             if (ocr_idx % ocr_sampling_rate == offset
@@ -424,9 +489,12 @@ def parse_csvs_arr(ocr_csv, movement_csv, team_info, ocr_sampling_rate=9, moveme
                 ocr_dict = ocr_data[ocr_idx] 
 
             ocr_idx += 1
-    return {"state": all_states, "action": all_actions}
 
-def save_trajectories_bc(ocr_data_dir, movement_data_dir, output_path, replay_info_path, n_seq = 9):
+    assert len(all_states) == len(all_actions), "Mismatch in number of states and actions"
+
+    return np.array(all_states), np.array(all_actions)
+
+def save_trajectories_bc(ocr_data_dir, movement_data_dir, output_dir, replay_info_path, output_name = "trajectories", n_seq = 9):
     """
     Batch csv pairs from data_dir into a single pkl file at output_path, 
     where each row of the pkl file is a list containing two numpy arrays:
@@ -434,6 +502,9 @@ def save_trajectories_bc(ocr_data_dir, movement_data_dir, output_path, replay_in
     - action: a numpy array of shape (seq_len, n_actions)
     """
     
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
     ocr_csvs = sorted(os.listdir(ocr_data_dir))
     movement_csvs = sorted(os.listdir(movement_data_dir))
 
@@ -442,7 +513,10 @@ def save_trajectories_bc(ocr_data_dir, movement_data_dir, output_path, replay_in
     with open(replay_info_path, 'r') as f:
         replay_info = json.load(f)
 
+    all_states, all_actions = [], []
+
     for ocr_csv, movement_csv in tqdm(zip(ocr_csvs, movement_csvs)):
+        print(ocr_csv, movement_csv)
         ocr_path = os.path.join(ocr_data_dir, ocr_csv)
         movement_path = os.path.join(movement_data_dir, movement_csv)
         video_name = ocr_csv[:ocr_csv.find('-stats')]
@@ -450,29 +524,47 @@ def save_trajectories_bc(ocr_data_dir, movement_data_dir, output_path, replay_in
         team_info = {"blue": set(video_info.get("blue_team")),
                     "red": set(video_info.get("red_team"))}
         
-        data = parse_csvs(ocr_path, movement_path, team_info)
-        output_file = os.path.join(output_path, f"{ocr_csv[:-4]}.pkl")
-
-        with open(output_file, 'wb') as f:
-            pickle.dump(data, f)
-
-        print(f"Saved trajectory to {output_file}")
-
+        states, actions = parse_csvs_arr(ocr_path, movement_path, team_info)
+        
+        for i in range(len(states) - n_seq):
+            state_seq = states[i:i + n_seq].astype(np.float32)
+            action = actions[i + n_seq].astype(np.float32)
+            all_states.append(torch.from_numpy(state_seq))
+            all_actions.append(torch.from_numpy(action))
+    all_states = torch.stack(all_states)
+    all_actions = torch.stack(all_actions)
+    print(all_states.shape, all_actions.shape)
+        # Run a sliding window on states to create sequences
+    torch.save((all_states, all_actions), os.path.join(output_dir, f"{output_name}.pt"))
 
 def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Process and save expert trajectories.")
-    parser.add_argument("--ocr_data_dir", type=str, required=True, help="Directory containing OCR CSV files.")
-    parser.add_argument("--movement_data_dir", type=str, required=True, help="Directory containing movement CSV files.")
-    parser.add_argument("--output_path", type=str, required=True, help="Directory to save the output pickle files.")
+    subparsers = parser.add_subparsers(dest="command", help="dictionary format or batched format for LSTMs")
+
+    standard_parser = subparsers.add_parser("extract", help="Extract frames from a video file.")
+    standard_parser.add_argument("--ocr_data_dir", type=str, required=True, help="Directory containing OCR CSV files.")
+    standard_parser.add_argument("--movement_data_dir", type=str, required=True, help="Directory containing movement CSV files.")
+    standard_parser.add_argument("--output_path", type=str, required=True, help="Directory to save the output pickle files.")
+
+    batched_parser = subparsers.add_parser("batched", help="Batch CSV pairs into a single pkl file.")
+    batched_parser.add_argument("--ocr_data_dir", type=str, required=True, help="Directory containing OCR CSV files.")
+    batched_parser.add_argument("--movement_data_dir", type=str, required=True, help="Directory containing movement CSV files.")
+    batched_parser.add_argument("--output_path", type=str, required=True, help="Directory to save the output pkl file.")
+    batched_parser.add_argument("--replay_info_path", type=str, default="replay_info.json", help="Path to the replay info JSON file.")
+    batched_parser.add_argument("--output_name", type=str, default="trajectories", help="Name of the output file.")
+    batched_parser.add_argument("--n_seq", type=int, default=9, help="Number of frames in each sequence.")
 
     args = parser.parse_args()
 
-    if not os.path.exists(args.output_path):
-        os.makedirs(args.output_path)
-
-    save_trajectories(args.ocr_data_dir, args.movement_data_dir, args.output_path)
+    if args.command == "extract":
+        save_trajectories(args.ocr_data_dir, args.movement_data_dir, args.output_path)
+    elif args.command == "batched":
+        save_trajectories_bc(args.ocr_data_dir, args.movement_data_dir, args.output_path, args.replay_info_path, args.output_name, args.n_seq)
+    else:
+        parser.print_help()
+        raise ValueError("Invalid command. Use 'extract' or 'batched'.")
 
 if __name__ == "__main__":
     main()
