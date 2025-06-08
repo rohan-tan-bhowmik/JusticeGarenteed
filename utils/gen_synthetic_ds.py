@@ -1699,12 +1699,12 @@ def generate_single_image(
                 map_img[-320:-256, -256+64*j - 1:-256+64*j+64 - 1, :] = icon_uint8
 
         img_name = f'map_{i:04d}.jpg'
-        # img_path = os.path.join(output_dir, split, img_name)
-        # cv2.imwrite(img_path, map_img)
+        img_path = os.path.join(output_dir, split, img_name)
+        cv2.imwrite(img_path, map_img)
 
-        plot_image_with_boxes(
-            map_img, boxes, labels, output_dir=output_dir, split=split, count = i
-        )
+        # plot_image_with_boxes(
+        #     map_img, boxes, labels, output_dir=output_dir, split=split, count = i
+        # )
 
         return {
             "filename": img_name,
