@@ -697,8 +697,8 @@ def generate_cutout(img_path, annotation_path, split, minion=False, make_transpa
     #         cutout = hv_jitter(cutout, hue_shift_limit=0, val_shift_limit=0.01)
 
     # Occasionally make cutout transparent to simulate hiding in bushes
-    # if random.random() < make_transparent_prob:
-    #     cutout = reduce_transparency(cutout)
+    if random.random() < make_transparent_prob:
+        cutout = reduce_transparency(cutout)
 
     return cutout, box_dict 
   
