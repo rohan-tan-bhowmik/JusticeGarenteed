@@ -20,10 +20,10 @@ ITEMS = set(['b1-1', 'b1-2', 'b1-3', 'b1-4', 'b1-5', 'b1-6', 'b1-7',
 
 # Maximum number of champions that can show up on screen at once - minimap and on-screen included
 # This is set slightly higher to account for detection inaccuracies 
-MAX_NUM_CHAMPIONS = 25
-MAX_NUM_MINIONS = 30
-MAX_NUM_TOWERS = 10
-MAX_NUM_DETECTIONS = MAX_NUM_CHAMPIONS + MAX_NUM_MINIONS + MAX_NUM_TOWERS
+MAX_NUM_CHAMPION_DETECTIONS = 25
+MAX_NUM_MINION_DETECTIONS = 30
+MAX_NUM_TOWER_DETECTIONS = 10
+MAX_NUM_DETECTIONS = MAX_NUM_CHAMPION_DETECTIONS + MAX_NUM_MINION_DETECTIONS + MAX_NUM_TOWER_DETECTIONS
 NUM_CONTINUOUS_F = 88
 
 ITEM_DICT_PATH = "item_dict.json"
@@ -64,8 +64,8 @@ def convert_row_dict(row_dict, item_dict, team_info=None):
             else:
                 action_dict[key]   = 1
                 _, x_str, y_str = item.split(',')  # or however you parse it
-                action_dict["x"]  = float(x_str)
-                action_dict["y"]  = float(y_str)
+                action_dict["x"]  = float(x_str)/SCREEN_WIDTH
+                action_dict["y"]  = float(y_str)/SCREEN_HEIGHT
             continue
 
         elif item == '' or item == '0':
@@ -298,9 +298,9 @@ def dict_to_obs_arr(step_dict):
     state = get_cont_f(step_dict)  # shape (N,) where N is the number of continuous features
     assert state.shape[0] == NUM_CONTINUOUS_F, f"Expected {NUM_CONTINUOUS_F} continuous features, got {state.shape[0]}"
 
-    champ_arr_max_size = MAX_NUM_CHAMPIONS * 5  # class + x + y + hp + color
-    minion_arr_max_size = MAX_NUM_MINIONS * 5  # class + x + y + hp + color
-    tower_arr_max_size = MAX_NUM_TOWERS * 5  # class + x + y + hp + color
+    champ_arr_max_size = MAX_NUM_CHAMPION_DETECTIONS * 5  # class + x + y + hp + color
+    minion_arr_max_size = MAX_NUM_MINION_DETECTIONS * 5  # class + x + y + hp + color
+    tower_arr_max_size = MAX_NUM_TOWER_DETECTIONS * 5  # class + x + y + hp + color
     
     minimap_detections = np.array(step_dict.get("minimap", [])) # shape (N, class + x + y + hp + color) where N is the number of detections
     champion_detections = np.concatenate((np.array(step_dict.get("champions", [])), minimap_detections), axis = 0) # shape (N, class + x + y + hp + color) where N is the number of detections
@@ -411,8 +411,9 @@ def save_trajectories(ocr_data_dir, movement_data_dir, output_path):
 
 def parse_csvs_arr(ocr_csv, movement_csv, team_info, ocr_sampling_rate=9, movement_sampling_rate=3):
     """
-    Returns a list of dicts, each mapping a movement-frame to a merged dict of
-    movement info + OCR info (sampled at ocr_sampling_rate).
+    Returns two numpy arrays:
+    - all_states: a numpy array of shape (N, NUM_CONTINUOUS_F + MAX_NUM_DETECTIONS * 5 + len(ITEMS))
+    - all_actions: a numpy array of shape (N, 10) where the first 4 are move_dir, target, x, y and the last 6 are ability actions.
 
     :param ocr_csv: Path to the OCR CSV file.
     :param movement_csv: Path to the movement CSV file.
