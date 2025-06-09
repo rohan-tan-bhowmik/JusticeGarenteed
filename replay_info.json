@@ -1,0 +1,145 @@
+{
+    "game-1-1": 
+        {
+        "full_video": "1-full.mp4",
+        "stats_video": "1-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 60,
+        "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+        "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+        "level-stats": "1-levels.json"
+        },
+    "game-1-2": 
+        {  
+        "full_video": "1-full.mp4",
+        "stats_video": "1-stats.mp4",
+        "start_frame_full": 0,
+        "start_frame_stats": 60,
+        "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+        "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+        "level-stats": "1-levels.json"
+        },
+    "game-1-3":
+        {
+        "full_video": "1-full.mp4",
+        "stats_video": "1-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 60,
+        "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+        "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+        "level-stats": "1-levels.json"
+        },
+    "game-1-4":
+        {
+        "full_video": "1-full.mp4",
+        "stats_video": "1-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 60,
+        "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+        "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+        "level-stats": "1-levels.json"
+        },
+    "game-1-5":
+        {
+        "full_video": "1-full.mp4",
+        "stats_video": "1-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 60,
+        "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+        "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+        "level-stats": "1-levels.json"
+        },
+    "game-1-6":
+        {
+            "full_video": "1-full.mp4",
+            "stats_video": "1-stats.mp4",
+            "start_frame_full": 0, 
+            "start_frame_stats": 60,
+            "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+            "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+            "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+            "level-stats": "1-levels.json"
+            },
+    "game-1-7":
+        {
+            "full_video": "1-full.mp4",
+            "stats_video": "1-stats.mp4",
+            "start_frame_full": 0, 
+            "start_frame_stats": 60,
+            "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+            "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+            "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+            "level-stats": "1-levels.json"
+            },
+    "game-2-1":
+        {
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+        }, 
+    "game-2-2":
+        {
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+        }, 
+    "game-2-3":
+        {
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+        }, 
+    "game-2-4":
+        {
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+        }, 
+    "game-2-5":
+        {
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+        },
+    "game-2-6":
+        {
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+        }
+  }
