@@ -7,6 +7,7 @@ import torch
 import torch.nn.functional as F
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import TensorDataset, random_split, DataLoader, DistributedSampler
 
 from torch.optim import Adam, AdamW
 from torch.utils.data import TensorDataset, random_split, DataLoader
@@ -240,6 +241,194 @@ def train_val_bc(
            
     print("Training complete.")
 
+def train_val_bc_ddp(
+    data_path: str,
+    emb_dim: int = 128,
+    seq_len: int = 9,
+    batch_size: int = 128,
+    num_epochs: int = 5,
+    lr: float = 1e-4,
+    weight_decay: float = 1e-4,
+    grad_clip: float = 1.0,
+    checkpoint_dir: str = None,
+    resume_from: str = None,
+    early_stop_epochs: int = 10,
+    wandb_project: str = "garen_bc_training",
+    wandb_run_name: str = "default_run",
+    seed: int = 42
+):
+    """
+    Distributed BC training loop for GarenPolicy.
+    Launch this with torch.distributed.run / torchrun.
+    """
+    # 1) Initialize process group & set device
+    dist.init_process_group(backend="nccl", init_method="env://")
+    rank = dist.get_rank()
+    world_size = dist.get_world_size()
+    local_rank = int(os.environ.get("LOCAL_RANK", rank))
+    torch.cuda.set_device(local_rank)
+    device = torch.device(f"cuda:{local_rank}")
+
+    # 2) Set seeds
+    seed_everything(seed)
+
+    # 3) Only rank 0 logs to wandb
+    if rank == 0:
+        wandb.init(
+            project=wandb_project,
+            name=wandb_run_name,
+            config={
+                "data_path": data_path,
+                "lr": lr,
+                "seq_len": seq_len,
+                "num_epochs": num_epochs,
+                "batch_size": batch_size,
+                "device": str(device),
+                "world_size": world_size
+            }
+        )
+
+    # 4) Load dataset
+    states, actions = torch.load(data_path)
+    dataset = TensorDataset(states, actions)
+
+    # 5) Train/val split (reproducible across ranks)
+    N = len(dataset)
+    train_size = int(0.8 * N)
+    val_size = N - train_size
+    generator = torch.Generator().manual_seed(seed)
+    train_ds, val_ds = random_split(dataset, [train_size, val_size], generator=generator)
+
+    # 6) Distributed samplers & loaders
+    train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True, seed=seed)
+    val_sampler   = DistributedSampler(val_ds,   num_replicas=world_size, rank=rank, shuffle=False, seed=seed)
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        sampler=train_sampler,
+        pin_memory=True,
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=batch_size,
+        sampler=val_sampler,
+        pin_memory=True,
+    )
+
+    # 7) Model, DDP wrapper, optimizer
+    policy = GarenPolicy(emb_dim=emb_dim, device=device).to(device)
+    policy = DDP(policy, device_ids=[local_rank], output_device=local_rank)
+    optimizer = AdamW(policy.parameters(), lr=lr, weight_decay=weight_decay)
+
+    # 8) Optional checkpoint resume (only model & optimizer)
+    if resume_from is not None:
+        ckpt = torch.load(resume_from, map_location=device)
+        policy.module.load_state_dict(ckpt["model_state"])
+        optimizer.load_state_dict(ckpt["optim_state"])
+        start_epoch = ckpt.get("epoch", 0) + 1
+        if rank == 0:
+            print(f"Resumed from {resume_from}; starting at epoch {start_epoch}")
+    else:
+        start_epoch = 0
+
+    # 9) Prepare checkpoint directory
+    if checkpoint_dir and rank == 0:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+    best_val_loss = float("inf")
+    early_stop_counter = 0
+
+    # 10) Training loop
+    for epoch in range(start_epoch, num_epochs):
+        train_sampler.set_epoch(epoch)
+        policy.train()
+
+        total_train_loss = 0.0
+        steps = 0
+
+        for states_batch, actions_batch in tqdm(
+            train_loader,
+            desc=f"[Rank {rank}] Epoch {epoch+1} train",
+            disable=(rank != 0),
+        ):
+            states_batch = states_batch.to(device)
+            actions_batch = actions_batch.to(device)
+
+            outputs = policy(states_batch)  # forward
+            losses = policy.module.loss(outputs, actions_batch)
+            total_loss = losses.sum()
+
+            optimizer.zero_grad()
+            total_loss.backward()
+            if grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=grad_clip)
+            optimizer.step()
+
+            total_train_loss += total_loss.item()
+            steps += 1
+
+        avg_train_loss = total_train_loss / max(1, steps)
+
+        # 11) Validation
+        val_sampler.set_epoch(epoch)
+        policy.eval()
+
+        total_val_loss = 0.0
+        val_steps = 0
+
+        with torch.no_grad():
+            for states_batch, actions_batch in tqdm(
+                val_loader,
+                desc=f"[Rank {rank}] Epoch {epoch+1} val",
+                disable=(rank != 0),
+            ):
+                states_batch = states_batch.to(device)
+                actions_batch = actions_batch.to(device)
+
+                outputs = policy(states_batch)
+                losses = policy.module.loss(outputs, actions_batch)
+                total_val_loss += losses.sum().item()
+                val_steps += 1
+
+        avg_val_loss = total_val_loss / max(1, val_steps)
+
+        # 12) Check for best & early stop (rank 0 only)
+        if rank == 0:
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                early_stop_counter = 0
+                torch.save({
+                    "epoch": epoch,
+                    "model_state": policy.module.state_dict(),
+                    "optim_state": optimizer.state_dict()
+                }, os.path.join(checkpoint_dir, "checkpoint_best.pth"))
+                print(f"[Epoch {epoch+1}] New best val loss: {best_val_loss:.6f}")
+            else:
+                early_stop_counter += 1
+                print(f"[Epoch {epoch+1}] No improvement ({avg_val_loss:.6f}); early-stop {early_stop_counter}/{early_stop_epochs}")
+
+            print(f"  Train loss: {avg_train_loss:.6f} | Val loss: {avg_val_loss:.6f}")
+
+            # 13) Log to wandb
+            wandb.log({
+                "epoch": epoch + 1,
+                "train_loss": avg_train_loss,
+                "val_loss": avg_val_loss,
+                "best_val_loss": best_val_loss,
+            })
+
+        # 14) Early stopping across runs
+        if early_stop_counter >= early_stop_epochs:
+            if rank == 0:
+                print(f"Early stopping triggered at epoch {epoch+1}")
+            break
+
+    if rank == 0:
+        print("Training complete.")
+
+    dist.destroy_process_group()
+
 def main():
     parser = argparse.ArgumentParser(description="Train a BC policy on Garen replay data.")
     parser.add_argument("--data_path", type=str, help="Path to .pt tensor dataset containing states and actions.")
@@ -256,24 +445,43 @@ def main():
     parser.add_argument("--early_stop_epochs", type=int, default=50, help="Number of epochs without improvement before early stopping.")
     parser.add_argument("--wandb_project", type=str, default="garen_bc_training", help="WandB project name for logging.")
     parser.add_argument("--wandb_run_name", type=str, default="default_run", help="WandB run name for logging.")
+    parser.add_argument("--distributed", action='store_true', help="Use distributed training with DDP.")
     args = parser.parse_args()
     
-    train_val_bc(
-        data_path=args.data_path,
-        emb_dim=args.emb_dim,
-        seq_len=args.seq_len,
-        batch_size=args.batch_size,
-        num_epochs=args.num_epochs,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        grad_clip=args.grad_clip,
-        device=args.device, 
-        checkpoint_dir=args.checkpoint_dir,
-        resume_from=args.resume_from,
-        early_stop_epochs=args.early_stop_epochs,
-        wandb_project=args.wandb_project,
-        wandb_run_name=args.wandb_run_name
-    )
+    if args.distributed:
+        # Launch with torch.distributed.run or torchrun
+        train_val_bc_ddp(
+            data_path=args.data_path,
+            emb_dim=args.emb_dim,
+            seq_len=args.seq_len,
+            batch_size=args.batch_size,
+            num_epochs=args.num_epochs,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            grad_clip=args.grad_clip,
+            checkpoint_dir=args.checkpoint_dir,
+            resume_from=args.resume_from,
+            early_stop_epochs=args.early_stop_epochs,
+            wandb_project=args.wandb_project,
+            wandb_run_name=args.wandb_run_name
+        )
+    else:
+        train_val_bc(
+            data_path=args.data_path,
+            emb_dim=args.emb_dim,
+            seq_len=args.seq_len,
+            batch_size=args.batch_size,
+            num_epochs=args.num_epochs,
+            lr=args.lr,
+            weight_decay=args.weight_decay,
+            grad_clip=args.grad_clip,
+            device=args.device, 
+            checkpoint_dir=args.checkpoint_dir,
+            resume_from=args.resume_from,
+            early_stop_epochs=args.early_stop_epochs,
+            wandb_project=args.wandb_project,
+            wandb_run_name=args.wandb_run_name
+        )
 
 if __name__ == "__main__":
     main()
