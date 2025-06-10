@@ -1,0 +1,83 @@
+{
+    "items": "item_data.json",
+    "replays": [
+      {
+        "name": "game-1",
+        "full_video": "1-full.mp4",
+        "stats_video": "1-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 60,
+        "skill_order": ["Q", "E", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "JarvanIV", "Ziggs", "Ezreal", "Bard"],
+        "red_team": ["Aatrox", "Ivern", "Aurora", "Smolder", "Nami"],
+        "level-stats": "1-levels.json"
+      },
+      {
+        "name": "game-2",
+        "full_video": "2-full.mp4",
+        "stats_video": "2-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 373,
+        "skill_order": ["E", "Q", "W", "E", "Q", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Darius", "Nunu", "Hwei", "Ezreal", "Kennen"],
+        "red_team": ["Garen", "KhaZix", "Talon", "Karthus", "Neeko"],
+        "level-stats": "2-levels.json"
+      },
+      {
+        "name": "game-3",
+        "full_video": "3-full.mp4",
+        "stats_video": "3-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 2,
+        "skill_order": ["E", "Q", "W", "E", "E", "R", "E", "Q", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Kled", "Diana", "Orianna", "Samira", "Pantheon"],
+        "red_team": ["Garen", "Kindred", "Hwei", "Seraphine", "Zilean"],
+        "level-stats": "3-levels.json"
+      },
+      {
+        "name": "game-4",
+        "full_video": "4-full.mp4",
+        "stats_video": "4-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 45,
+        "skill_order": ["Q", "E", "W", "E", "E", "R", "E", "Q", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Camille", "Diana", "Galio", "Jinx", "Karma"],
+        "red_team": ["Garen", "Gwen", "Lulu", "Corki", "Nautilus"],
+        "level-stats": "4-levels.json"
+      },
+      {
+        "name": "game-5",
+        "full_video": "5-full.mp4",
+        "stats_video": "5-stats.mp4",
+        "start_frame_full": 83, 
+        "start_frame_stats": 0,
+        "skill_order": ["E", "Q", "W", "E", "E", "R", "E", "Q", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Kennen", "Sejuani", "Lissandra", "Xayah", "Rakan"],
+        "red_team": ["Garen", "Zed", "Mel", "Yasuo", "Alistar"],
+        "level-stats": "5-levels.json"
+      },
+      {
+        "name": "game-6",
+        "full_video": "6-full.mp4",
+        "stats_video": "6-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 1,
+        "skill_order": ["E", "Q", "W", "Q", "E", "R", "E", "E", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["Garen", "Elise", "Kindred", "Mel", "Nami"],
+        "red_team": ["Yasuo", "Skarner", "Heimerdinger", "Aphelios", "Amumu"],
+        "level-stats": "6-levels.json"
+      },
+      {
+        "name": "game-7",
+        "full_video": "7-full.mp4",
+        "stats_video": "7-stats.mp4",
+        "start_frame_full": 0, 
+        "start_frame_stats": 22,
+        "skill_order": ["E", "Q", "W", "E", "E", "R", "E", "Q", "E", "Q", "R", "Q", "Q", "W", "W", "R", "W", "W"],
+        "blue_team": ["DrMundo", "Diana", "Galio", "Ezreal", "Karma"],
+        "red_team": ["Garen", "Pantheon", "Jinx", "Vex", "Soraka"],
+        "level-stats": "7-levels.json"
+      }
+    ]
+  } 
+  
