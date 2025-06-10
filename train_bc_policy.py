@@ -12,7 +12,7 @@ from torch.optim import Adam, AdamW
 from torch.utils.data import TensorDataset, random_split, DataLoader
 
 from LolGarenEnv import GarenReplayEnv
-from policy import GarenBCPolicy
+from policy import GarenPolicy
 from tqdm import tqdm
 
 import argparse
@@ -79,7 +79,7 @@ def train_val_bc(
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory = True, generator=g)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, pin_memory = True)
 
-    policy = GarenBCPolicy(device = device).to(device)
+    policy = GarenPolicy(device = device).to(device)
     policy.to(device)
 
     optimizer = AdamW(policy.parameters(), lr=lr, weight_decay=weight_decay)

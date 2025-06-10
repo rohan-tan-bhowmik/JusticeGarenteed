@@ -268,17 +268,19 @@ CONDENSED_CHAMPIONS = [
     "Red Caster",
     "Red Melee",
     "RedSiege", 
-    "RedTower", 
-    "RedInhibitor",
-    "RedNexus",
     "Blue Cannon",
     "Blue Caster",
     "Blue Melee",
     "BlueSiege",
+    "RedTower", 
+    "RedInhibitor",
+    "RedNexus",
     "BlueTower",
     "BlueInhibitor",
     "BlueNexus",
-    "Unknown"
+    "UnknownChampion",
+    "UnknownMinion",
+    "UnknownTower"
 ]
 
 CONDENSED_CHAMPIONS_TO_I = {name: i for i, name in enumerate(CONDENSED_CHAMPIONS)}
