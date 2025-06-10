@@ -212,13 +212,7 @@ def convert_row_dict(row_dict, item_dict, team_info=None):
             item = item.split(' ')
             state_dict[key] = float(item[0]) / 11 
         elif key == 'game-time':
-            minutes, seconds = 0, 0
-            if ':' in item:
-                seconds = item.split(':')[1]
-                time = int(minutes) * 60 + int(seconds)
-            else:
-                time = float(item) * 60
-            state_dict[key] = float(time) / (60 * 60) # reasonable max game time is 60 minutes
+            state_dict[key] = float(state_dict["frame"]) / (30 * 3600)
         else:
             state_dict[key] = float(item) if item else 0.0
 
@@ -535,7 +529,6 @@ def save_trajectories_bc(ocr_data_dir, movement_data_dir, output_dir, replay_inf
     all_states = torch.stack(all_states)
     all_actions = torch.stack(all_actions)
     print(all_states.shape, all_actions.shape)
-        # Run a sliding window on states to create sequences
     torch.save((all_states, all_actions), os.path.join(output_dir, f"{output_name}.pt"))
 
 def main():
