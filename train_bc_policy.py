@@ -26,6 +26,7 @@ def seed_everything(seed):
 
 def train_val_bc(
     data_path: str,
+    emb_dim: int = 128,
     seq_len: int = 9,
     batch_size: int = 128,
     num_epochs: int = 5,
@@ -38,7 +39,6 @@ def train_val_bc(
     early_stop_epochs: int = 10,
     wandb_project: str = "garen_bc_training",
     wandb_run_name: str = "default_run", 
-    logging_freq: int = 500,
     seed: int = 42
 ):
     """
@@ -79,7 +79,12 @@ def train_val_bc(
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, pin_memory = True, generator=g)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, pin_memory = True)
 
-    policy = GarenPolicy(device = device).to(device)
+    policy = GarenPolicy(emb_dim=emb_dim, device = device).to(device)
+    # print number of parameters
+
+    num_params = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+    print(f"Policy has {num_params} trainable parameters.")
+
     policy.to(device)
 
     optimizer = AdamW(policy.parameters(), lr=lr, weight_decay=weight_decay)
@@ -104,6 +109,10 @@ def train_val_bc(
         # load data for this epoch
         policy.train()
         train_epoch_loss = 0.0
+        train_movement_loss = 0.0
+        train_attack_loss = 0.0
+        train_target_loss = 0.0
+        train_ability_loss = 0.0
         count_steps = 0
 
         # train epoch
@@ -115,17 +124,26 @@ def train_val_bc(
 
             outputs = policy.forward(states) # (batch_size, action_dim)
             loss = policy.loss(outputs, expert_action)
+            movement_loss = loss[0]
+            attack_loss = loss[1]
+            target_loss = loss[2]
+            ability_loss = loss[3]
+            total_loss = loss.sum()  # total loss is the sum of all individual losses
 
             # 4) Backprop + step
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
 
             if grad_clip > 0.0:
                 torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=grad_clip)
 
             optimizer.step()
 
-            train_epoch_loss += loss.item()
+            train_epoch_loss += total_loss.item()
+            train_movement_loss += movement_loss.item()
+            train_attack_loss += attack_loss.item()
+            train_target_loss += target_loss.item()
+            train_ability_loss += ability_loss.item()
             count_steps += 1
         
         if checkpoint_dir is not None:
@@ -134,6 +152,10 @@ def train_val_bc(
         # val epoch
         policy.eval()
         val_epoch_loss = 0.0
+        val_movement_loss = 0.0
+        val_attack_loss = 0.0
+        val_target_loss = 0.0
+        val_ability_loss = 0.0
         with torch.no_grad():
             for batch in tqdm(val_loader, desc=f"Epoch {epoch + 1} validation", unit="batch"):
                 states, expert_action = batch
@@ -141,9 +163,30 @@ def train_val_bc(
                 expert_action = expert_action.to(device)
                 outputs = policy.forward(states)
                 loss = policy.loss(outputs, expert_action)
-                val_epoch_loss += loss.item()
+                movement_loss = loss[0]
+                attack_loss = loss[1]
+                target_loss = loss[2]
+                ability_loss = loss[3]
+                total_loss = loss.sum()
+
+                val_epoch_loss += total_loss.item()
+                val_movement_loss += movement_loss.item()
+                val_attack_loss += attack_loss.item()
+                val_target_loss += target_loss.item()
+                val_ability_loss += ability_loss.item()
+                
+        avg_train_loss = train_epoch_loss / len(train_loader)
+        avg_train_movement_loss = train_movement_loss / len(train_loader)
+        avg_train_attack_loss = train_attack_loss / len(train_loader)
+        avg_train_target_loss = train_target_loss / len(train_loader)
+        avg_train_ability_loss = train_ability_loss / len(train_loader)
+
 
         val_epoch_loss /= len(val_loader)
+        val_movement_loss /= len(val_loader)
+        val_attack_loss /= len(val_loader)
+        val_target_loss /= len(val_loader)
+        val_ability_loss /= len(val_loader)
 
         if val_epoch_loss < best_val_loss:
             best_val_loss = val_epoch_loss
@@ -157,24 +200,39 @@ def train_val_bc(
         else:
             early_stop += 1
             
-
-        avg_train_loss = train_epoch_loss / len(train_loader)
         print(f"Epoch {epoch} BC train loss = {avg_train_loss:.6f}")
+        print(f"Epoch {epoch} BC train movement loss = {avg_train_movement_loss:.6f}")
+        print(f"Epoch {epoch} BC train attack loss = {avg_train_attack_loss:.6f}")
+        print(f"Epoch {epoch} BC train target loss = {avg_train_target_loss:.6f}")
+        print(f"Epoch {epoch} BC train ability loss = {avg_train_ability_loss:.6f}")
         print(f"Epoch {epoch} validation loss: {val_epoch_loss:.6f}")
+        print(f"Epoch {epoch} validation movement loss: {val_movement_loss:.6f}")
+        print(f"Epoch {epoch} validation attack loss: {val_attack_loss:.6f}")
+        print(f"Epoch {epoch} validation target loss: {val_target_loss:.6f}")
+        print(f"Epoch {epoch} validation ability loss: {val_ability_loss:.6f}")
 
         wandb.log({
             "epoch_train_loss": avg_train_loss,
+            "epoch_train_movement_loss": avg_train_movement_loss,
+            "epoch_train_attack_loss": avg_train_attack_loss,
+            "epoch_train_target_loss": avg_train_target_loss,
+            "epoch_train_ability_loss": avg_train_ability_loss,
             "epoch_val_loss": val_epoch_loss,
+            "epoch_val_movement_loss": val_movement_loss,
+            "epoch_val_attack_loss": val_attack_loss,
+            "epoch_val_target_loss": val_target_loss,
+            "epoch_val_ability_loss": val_ability_loss,
+            "best_val_loss": best_val_loss,
             "epoch": epoch
         }, step = epoch)
         
-        torch.save({
-            "epoch": epoch,
-            "model_state": policy.state_dict(),
-            "optim_state": optimizer.state_dict()
-        }, ckpt_path)
+        # torch.save({
+        #     "epoch": epoch,
+        #     "model_state": policy.state_dict(),
+        #     "optim_state": optimizer.state_dict()
+        # }, ckpt_path)
 
-        print(f"Saved checkpoint: {ckpt_path}\n")
+        # print(f"Saved checkpoint: {ckpt_path}\n")
 
         if early_stop >= early_stop_epochs:
             print(f"Early stopping triggered after {early_stop_epochs} epochs without improvement.")
@@ -186,6 +244,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train a BC policy on Garen replay data.")
     parser.add_argument("--data_path", type=str, help="Path to .pt tensor dataset containing states and actions.")
     parser.add_argument("--seq_len", type=int, default=9, help="Length of input sequence for the policy.")
+    parser.add_argument("--emb_dim", type=int, default=128, help="Dimension of the policy embedding.")
     parser.add_argument("--batch_size", type=int, default=128, help="Batch size for training.")
     parser.add_argument("--num_epochs", type=int, default=500, help="Number of training epochs.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
@@ -194,13 +253,14 @@ def main():
     parser.add_argument("--device", type=str, default="cuda", help="Device to run training on (e.g., 'cuda' or 'cpu').")
     parser.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Directory to save checkpoints.")
     parser.add_argument("--resume_from", type=str, default=None, help="Path to a checkpoint to resume training from.")
-    parser.add_argument("--early_stop_epochs", type=int, default=10, help="Number of epochs without improvement before early stopping.")
+    parser.add_argument("--early_stop_epochs", type=int, default=50, help="Number of epochs without improvement before early stopping.")
     parser.add_argument("--wandb_project", type=str, default="garen_bc_training", help="WandB project name for logging.")
     parser.add_argument("--wandb_run_name", type=str, default="default_run", help="WandB run name for logging.")
     args = parser.parse_args()
     
     train_val_bc(
         data_path=args.data_path,
+        emb_dim=args.emb_dim,
         seq_len=args.seq_len,
         batch_size=args.batch_size,
         num_epochs=args.num_epochs,

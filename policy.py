@@ -275,7 +275,7 @@ class GarenPolicy(nn.Module):
 
         loss_abil = F.binary_cross_entropy_with_logits(abil_logits, abilities.float(), reduction='mean')
 
-        return loss_move + loss_attack + loss_xy + loss_abil  # scalar tensor
+        return torch.stack([loss_move, loss_attack, loss_xy, loss_abil])
     
     def predict(self, state: list) -> dict:
         with torch.no_grad():
