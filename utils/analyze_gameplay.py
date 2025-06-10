@@ -645,7 +645,7 @@ def main(replay_folder: str, game_name: str, scale: float, skip_n: int, wild_thr
                 if hb_minion_inds and sp_minion_inds:
                     hb_boxes_minion = hb_boxes[hb_minion_inds]
                     sp_boxes_minion = sp_boxes[sp_minion_inds]
-                    matches_minion, _, _ = get_matches(
+                    matches_minion, unmatched_hb_minions, unmatched_sp_minions = get_matches(
                         hb_boxes_minion,
                         sp_boxes_minion,
                         distance_threshold=200
@@ -718,6 +718,54 @@ def main(replay_folder: str, game_name: str, scale: float, skip_n: int, wild_thr
                                 1,
                                 cv2.LINE_AA
                             )
+
+                    for hb_idx0 in unmatched_hb_minions:
+                        actual_hb_idx = hb_minion_inds[hb_idx0]
+                        hb_box = hb_boxes[actual_hb_idx]
+                        hb_label = hb_labels[actual_hb_idx]
+
+                        # HB center:
+                        x_hb, y_hb, w_hb, h_hb = hb_box
+                        hb_cx = x_hb + w_hb // 2
+                        hb_cy = y_hb + h_hb // 2
+
+                        # Try to “snap” this HB to any existing minionion track
+                        best_match = None
+                        best_dist = float("inf")
+                        for minion_name, track in minion_tracks.items():
+                            cx_prev, cy_prev = track["last_center"]
+                            dist = math.hypot(hb_cx - cx_prev, hb_cy - cy_prev)
+                            # use a larger threshold so a fast‐moving minionion still snaps
+                            if dist < 100.0 and dist < best_dist:
+                                best_match = minion_name
+                                best_dist = dist
+
+                        if best_match is not None:
+                            # Re‐use the exact last_center for this minionion
+                            pct = minion_tracks[best_match]["last_hp"]
+                            team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+                            cx_prev, cy_prev = minion_tracks[best_match]["last_center"]
+                            minionion_data.append((
+                                best_match,
+                                int(cx_prev), int(cy_prev),
+                                pct,
+                                team_color
+                            ))
+                            cv2.circle(annotated, (int(cx_prev), int(cy_prev)), 5, (128, 0, 128), thickness=1)
+
+                        else:
+                            # No existing track is “close enough,” remain UNKNOWN
+                            synth_cx = hb_cx
+                            synth_cy = hb_cy + 200
+                            key = f"Minion:UnknownMinion:{synth_cx//10}:{synth_cy//10}"
+                            pct = last_champ_hp.get(key, 100.0)
+                            team_color = "Blue" if hb_label.startswith("Blue") else "Red"
+                            minion_data.append((
+                                "UnknownMinion",
+                                synth_cx, synth_cy,
+                                pct,
+                                team_color
+                            ))
 
                 # (f) Match champion healthbars → champion bodies
                 if hb_champ_inds and sp_champ_inds:
@@ -845,11 +893,11 @@ def main(replay_folder: str, game_name: str, scale: float, skip_n: int, wild_thr
                             # No existing track is “close enough,” remain UNKNOWN
                             synth_cx = hb_cx
                             synth_cy = hb_cy + 200
-                            key = f"Champion:UNKNOWN:{synth_cx//10}:{synth_cy//10}"
+                            key = f"Champion:UnknownChampion:{synth_cx//10}:{synth_cy//10}"
                             pct = last_champ_hp.get(key, 100.0)
                             team_color = "Blue" if hb_label.startswith("Blue") else "Red"
                             champion_data.append((
-                                "UNKNOWN",
+                                "UnknownChampion",
                                 synth_cx, synth_cy,
                                 pct,
                                 team_color
